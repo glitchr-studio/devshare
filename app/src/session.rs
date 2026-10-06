@@ -272,6 +272,18 @@ fn snapshot(share: &Share, journal: &Journal) -> Snapshot {
                         }) => Some(format!("its certificate is not for {}", service.host)),
                         _ => None,
                     };
+                    // What a guest cannot follow, when nothing worse is to say.
+                    let local = check
+                        .map(|check| check.local.as_slice())
+                        .unwrap_or_default();
+                    let warning = warning.or_else(|| {
+                        (!local.is_empty()).then(|| {
+                            format!(
+                                "its pages point at {}, which for a guest is their own machine",
+                                local.join(", ")
+                            )
+                        })
+                    });
                     ServiceView {
                         address: format!("{}:{}", service.host, service.port),
                         tls: service.tls.is_some(),

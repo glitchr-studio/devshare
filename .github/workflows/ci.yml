@@ -1,0 +1,31 @@
+# What every change must pass: formatting, lint and the tests, on Linux.
+# The desktop app is not built here: it needs a system web view, and its
+# tests run on a developer's machine. The end-to-end sessions (make e2e) need
+# containers with their own network interfaces and are run locally too.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      # Tests never depend on relays on the internet, nor on a user's settings.
+      DEVSHARE_RELAY: disabled
+      DEVSHARE_SETTINGS: /dev/null
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Formatting
+        # The workspace's default members: everything but the desktop app.
+        run: cargo fmt --check -p devshare-protocol -p devshare-core -p devshare-cli -p devshare-server
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test

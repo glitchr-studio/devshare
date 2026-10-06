@@ -62,6 +62,9 @@ pub struct ServiceCheck {
     pub host: String,
     pub port: u16,
     pub probe: Probe,
+    /// The addresses meaning "this machine" its first page points at: a
+    /// guest cannot follow them. See [`probe::local_references`].
+    pub local: Vec<String>,
 }
 
 /// Connects to every service of the selection, all at once, and writes the
@@ -74,7 +77,19 @@ async fn check_services(selection: &mut Selection) -> Vec<ServiceCheck> {
             let (host, port, target) = (host.clone(), *port, target.clone());
             tokio::spawn(async move {
                 let probe = probe::probe(&target, &host).await;
-                ServiceCheck { host, port, probe }
+                let local = match &probe {
+                    Probe::Down => Vec::new(),
+                    probe => {
+                        let tls = matches!(probe, Probe::Tls { .. });
+                        probe::local_references(&target, &format!("{host}:{port}"), tls).await
+                    }
+                };
+                ServiceCheck {
+                    host,
+                    port,
+                    probe,
+                    local,
+                }
             })
         })
         .collect();

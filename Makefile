@@ -15,7 +15,7 @@ RUST = docker run --rm \
 	-w /work rust:1-bookworm
 CARGO = $(RUST) cargo
 
-.PHONY: build release test tests check e2e deb relay macos ios app dmg showcase demo install uninstall clean
+.PHONY: build release test tests check e2e deb dist-macos relay macos ios app dmg showcase demo install uninstall clean
 
 build:
 	$(CARGO) build
@@ -44,6 +44,15 @@ deb:
 	docker build -q -t devshare-build -f docker/build.Dockerfile docker
 	docker run --rm -v "$(CURDIR)":/work -v devshare-cargo:/usr/local/cargo/registry \
 		-v devshare-target:/work/target -w /work devshare-build docker/package.sh
+
+# dist/: the macOS commands, optimized, as a tarball for this machine's
+# architecture. Not signed: macOS will ask before running them elsewhere.
+dist-macos:
+	PATH="$$(brew --prefix rustup)/bin:$$PATH" cargo build --release -p devshare-cli -p devshare-server --target-dir target-macos
+	mkdir -p dist
+	tar -C target-macos/release -czf \
+		dist/devshare-$$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)-macos-$$(uname -m).tar.gz \
+		devshare devshare-server
 
 # iroh's relay server, built once into the build volume.
 relay:

@@ -46,6 +46,11 @@ pub struct Settings {
     /// What comes after the project's name in the hostname guests use.
     #[serde(default)]
     pub domain: Option<String>,
+    /// The relay sessions go through: the address of a relay of one's own,
+    /// or `disabled` for direct connections only. The public relays of the
+    /// iroh project when it is not set.
+    #[serde(default)]
+    pub relay: Option<String>,
     /// The public address of the invitation page. Invitation links and QR
     /// codes point there, so that a device on any network can open them;
     /// empty, they point at the control plane instead.
@@ -73,6 +78,11 @@ impl Settings {
 # What comes after a project's name in the hostname guests use:
 # a project named shop is reached as shop.test.
 # domain = \"test\"
+
+# The relay sessions go through when the two machines cannot reach each
+# other directly: a relay of your own, or \"disabled\" for none. The public
+# relays of the iroh project are used when this is not set.
+# relay = \"https://relay.example\"
 
 # The public page invitation links and QR codes point at, so that they open
 # from any network. Set it to \"\" to have them point at this machine instead.
@@ -102,7 +112,7 @@ impl Settings {
         };
         let settings: Self = toml::from_str(&content).with_context(|| {
             format!(
-                "{} holds general settings only (server, duration, guests, domain, join); \
+                "{} holds general settings only (server, duration, guests, domain, relay, join); \
                  the environments of a project belong in its own folder",
                 path.display()
             )

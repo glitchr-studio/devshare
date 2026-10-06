@@ -191,6 +191,7 @@ async fn share(
     no_qr: bool,
 ) -> Result<()> {
     let settings = Settings::load()?;
+    devshare_core::link::use_relay(settings.relay.clone());
     if let Some(stranger) = folders.iter().find(|folder| !folder.is_dir()) {
         bail!(
             "{} is not a folder (to share one environment of a project: --only <name>)",
@@ -270,6 +271,13 @@ async fn share(
                 check.host
             ),
             _ => {}
+        }
+        if !check.local.is_empty() {
+            println!(
+                "\n! {service}: its pages point at {}. For a guest that is the guest's",
+                check.local.join(", ")
+            );
+            println!("  own machine: those links, redirects, scripts or styles will not follow.");
         }
     }
     // Nothing answers at all: the project is not started, and that is the
@@ -405,8 +413,10 @@ async fn command(share: &Share, line: &str) {
 async fn join(server: Option<String>, invitation: &str) -> Result<()> {
     // What was asked for, else the control plane the link itself names,
     // else the one of the general settings.
+    let settings = Settings::load()?;
+    devshare_core::link::use_relay(settings.relay.clone());
     let server = server.or_else(|| qr::server_of(invitation));
-    let server = environment::server(server, None, &Settings::load()?);
+    let server = environment::server(server, None, &settings);
     let mut link = GuestLink::join(invitation, &server, guest::this_device()).await?;
 
     let tunnel = match Tunnel::start(link.opener(), &link.manifest).await {
@@ -565,6 +575,13 @@ fn settings(init: bool) -> Result<()> {
         "  domain    {}{}",
         settings.domain(),
         origin(settings.domain.is_some())
+    );
+    println!(
+        "  relay     {}",
+        match settings.relay.as_deref() {
+            Some(relay) => relay.to_string(),
+            None => "the public relays of the iroh project  (default)".to_string(),
+        }
     );
     match settings.join() {
         Some(join) => println!("  join      {join}{}", origin(settings.join.is_some())),

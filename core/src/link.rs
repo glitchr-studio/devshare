@@ -1,6 +1,6 @@
 //! The encrypted peer-to-peer link between a host and its guests.
 
-use std::{env, time::Duration};
+use std::{env, sync::OnceLock, time::Duration};
 
 use anyhow::{anyhow, Context, Result};
 use devshare_protocol::ALPN;
@@ -10,15 +10,34 @@ use iroh::{
 };
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
-/// `DEVSHARE_RELAY`: unset for the default relays, a URL for a self-hosted
-/// relay, `disabled` for direct connections only.
+/// The relay named by the general settings, for this process.
+static CONFIGURED: OnceLock<Option<String>> = OnceLock::new();
+
+/// Says which relay the general settings name. To call once, before any
+/// session starts; `DEVSHARE_RELAY` still wins over it.
+pub fn use_relay(relay: Option<String>) {
+    CONFIGURED.set(relay).ok();
+}
+
+/// The relays to use: what `DEVSHARE_RELAY` says, else what the general
+/// settings say, else the default ones. Either can be the address of a relay
+/// of one's own, or `disabled` for direct connections only.
 fn relay_mode() -> Result<RelayMode> {
-    match env::var("DEVSHARE_RELAY").ok().as_deref() {
-        None | Some("") => Ok(RelayMode::Default),
+    let asked = env::var("DEVSHARE_RELAY").ok();
+    let configured = CONFIGURED.get().cloned().flatten();
+    relay_mode_of(asked.as_deref(), configured.as_deref())
+}
+
+fn relay_mode_of(asked: Option<&str>, configured: Option<&str>) -> Result<RelayMode> {
+    let chosen = asked
+        .filter(|relay| !relay.is_empty())
+        .or(configured.filter(|relay| !relay.is_empty()));
+    match chosen {
+        None => Ok(RelayMode::Default),
         Some("disabled") => Ok(RelayMode::Disabled),
         Some(url) => {
             let map = RelayMap::try_from_iter([url])
-                .map_err(|error| anyhow!("DEVSHARE_RELAY is not a relay URL: {error}"))?;
+                .map_err(|error| anyhow!("\"{url}\" is not the address of a relay: {error}"))?;
             Ok(RelayMode::Custom(map))
         }
     }
@@ -108,4 +127,35 @@ where
     };
     tokio::try_join!(inbound, outbound)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_relay_is_what_was_asked_for_then_the_setting_then_the_default() {
+        let kind = |asked, configured| match relay_mode_of(asked, configured).unwrap() {
+            RelayMode::Default => "default".to_string(),
+            RelayMode::Disabled => "disabled".to_string(),
+            RelayMode::Custom(map) => map.urls::<Vec<_>>()[0].to_string(),
+            _ => "other".to_string(),
+        };
+        assert_eq!(kind(None, None), "default");
+        assert_eq!(kind(Some(""), None), "default");
+        assert_eq!(
+            kind(None, Some("https://relay.glitchr.dev")),
+            "https://relay.glitchr.dev/"
+        );
+        assert_eq!(kind(None, Some("disabled")), "disabled");
+        assert_eq!(
+            kind(Some("disabled"), Some("https://relay.glitchr.dev")),
+            "disabled"
+        );
+        assert_eq!(
+            kind(Some("https://other.example"), Some("disabled")),
+            "https://other.example/"
+        );
+        assert!(relay_mode_of(None, Some("not a relay")).is_err());
+    }
 }

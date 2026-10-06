@@ -176,3 +176,71 @@ async fn guests_receive_the_fingerprint_the_host_saw() {
     link.close().await;
     share.stop().await;
 }
+
+/// A service whose first page is `answer`, sent as it is.
+async fn page_service(answer: &'static str) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                use tokio::io::AsyncReadExt;
+                // The request, then the answer.
+                let mut request = [0u8; 1024];
+                let _read = stream.read(&mut request).await;
+                stream.write_all(answer.as_bytes()).await.ok();
+            });
+        }
+    });
+    address
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pages_that_point_at_this_machine_are_found() {
+    use devshare_core::probe::local_references;
+
+    // A page that loads its script and a style from the developer's machine.
+    let vite = page_service(
+        "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n<html><head>\
+         <script type=\"module\" src=\"http://localhost:5173/@vite/client\"></script>\
+         <link rel=\"stylesheet\" href=\"http://localhost:5173/app.css\">\
+         <img src=\"//127.0.0.1:8025/logo.png\"></head></html>",
+    )
+    .await;
+    assert_eq!(
+        local_references(&vite.to_string(), "shop.test:8080", false).await,
+        ["localhost:5173", "127.0.0.1:8025"]
+    );
+
+    // A redirect to it counts as much as a link.
+    let redirect =
+        page_service("HTTP/1.0 308 Permanent Redirect\r\nLocation: https://localhost/\r\n\r\n")
+            .await;
+    assert_eq!(
+        local_references(&redirect.to_string(), "shop.test:80", false).await,
+        ["localhost"]
+    );
+
+    // A page that says where it is by the address it was asked under, and
+    // one that only talks about localhost, point nowhere a guest cannot go.
+    let fine = page_service(
+        "HTTP/1.0 200 OK\r\n\r\n<a href=\"/cart\">cart</a> <a href=\"https://localhost.example/\">x</a>\
+         <p>On your machine this is localhost:8710.</p>",
+    )
+    .await;
+    assert!(local_references(&fine.to_string(), "shop.test:80", false)
+        .await
+        .is_empty());
+
+    // The same over TLS.
+    let (secure, _) = tls_service("shop.test").await;
+    assert!(local_references(&secure.to_string(), "shop.test:443", true)
+        .await
+        .is_empty());
+    // Nothing there: nothing found, and no waiting.
+    assert!(
+        local_references(&closed_port().await.to_string(), "shop.test:80", false)
+            .await
+            .is_empty()
+    );
+}

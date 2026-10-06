@@ -164,6 +164,7 @@ async fn share<R: Runtime>(
     }
     let config = projects(&app)?.declared().config;
     let settings = Settings::load().unwrap_or_default();
+    devshare_core::link::use_relay(settings.relay.clone());
     let selection = config
         .select(&environments)
         .map_err(|error| format!("{error:#}"))?;
