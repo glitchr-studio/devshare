@@ -1,0 +1,37 @@
+# Laid over compose.yml by `docker/e2e.sh relayed`: the host and the guest sit
+# on two networks with no route between them, as two people behind two
+# routers do. All they share is the control plane and a relay we run
+# ourselves, so every byte of the session goes through that relay.
+services:
+  relay:
+    build: .
+    init: true
+    command: /opt/devshare/relay/bin/iroh-relay --dev
+    volumes:
+      - devshare-target:/opt/devshare:ro
+    networks: [home, office]
+
+  control:
+    networks: [home, office]
+
+  host:
+    depends_on: [control, relay]
+    environment:
+      DEVSHARE_RELAY: http://relay:3340
+    networks: [home]
+
+  guest:
+    depends_on: [control, relay]
+    environment:
+      DEVSHARE_RELAY: http://relay:3340
+    networks: [office]
+
+networks:
+  home:
+    ipam:
+      config:
+        - subnet: 10.213.11.0/24
+  office:
+    ipam:
+      config:
+        - subnet: 10.213.12.0/24

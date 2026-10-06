@@ -1,0 +1,260 @@
+//! The showcase of `tests/showcase`, read from its compose file, and the
+//! rules for writing a directory's `devshare.toml`.
+
+use std::path::{Path, PathBuf};
+
+use devshare_core::{
+    discover::{discover, write, Options, FILE},
+    environment::Config,
+};
+
+fn showcase() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/showcase")
+}
+
+/// A copy of the showcase's compose file and ports in a folder of its own.
+fn project(name: &str) -> PathBuf {
+    let folder = std::env::temp_dir().join(format!("devshare-{name}-{}", std::process::id()));
+    std::fs::remove_dir_all(&folder).ok();
+    std::fs::create_dir_all(&folder).unwrap();
+    for file in ["docker-compose.yml", ".env"] {
+        std::fs::copy(showcase().join(file), folder.join(file)).unwrap();
+    }
+    folder
+}
+
+#[test]
+fn the_showcase_shares_its_three_web_ports_and_nothing_else() {
+    let found = discover(&showcase(), &Options::default()).unwrap();
+
+    assert_eq!(found.project, "showcase");
+    assert_eq!(found.hostname, "showcase.test");
+    assert_eq!(found.sources, ["docker-compose.yml", ".env"]);
+
+    // The ports of .env, not the defaults written in the compose file.
+    let shared: Vec<(String, Option<u16>)> = found
+        .shared()
+        .map(|port| (port.label(), port.host))
+        .collect();
+    assert_eq!(
+        shared,
+        [
+            ("web → 80".to_string(), Some(8710)),
+            ("api → 80".to_string(), Some(8711)),
+            ("docs → 80".to_string(), Some(8712)),
+        ]
+    );
+    let left_out: Vec<(String, &str)> = found
+        .left_out()
+        .map(|port| (port.label(), port.left_out.as_deref().unwrap()))
+        .collect();
+    assert_eq!(
+        left_out,
+        [
+            ("api → 8125/udp".to_string(), "UDP is not shared yet"),
+            (
+                "cache → 6379".to_string(),
+                "a cache is not shared by default"
+            ),
+        ]
+    );
+    assert_eq!(
+        found.entrypoint().as_deref(),
+        Some("http://showcase.test:8710")
+    );
+
+    // The file in the showcase's folder is exactly what discover writes...
+    let written = std::fs::read_to_string(showcase().join(FILE)).unwrap();
+    assert_eq!(found.to_toml(None), written);
+
+    // ...and what a session reads from it is what was found: one hostname,
+    // three ports, each reached on this machine where Docker publishes it.
+    let read: Config = toml::from_str(&written).unwrap();
+    let services: Vec<(String, u16, Option<String>)> = read.environments["showcase"]
+        .services
+        .iter()
+        .map(|service| (service.host.clone(), service.port, service.target.clone()))
+        .collect();
+    assert_eq!(
+        services,
+        [
+            (
+                "showcase.test".to_string(),
+                8710,
+                Some("127.0.0.1:8710".to_string())
+            ),
+            (
+                "showcase.test".to_string(),
+                8711,
+                Some("127.0.0.1:8711".to_string())
+            ),
+            (
+                "showcase.test".to_string(),
+                8712,
+                Some("127.0.0.1:8712".to_string())
+            ),
+        ]
+    );
+    let selection = read.select(&[]).unwrap();
+    assert_eq!(selection.routes.len(), 3);
+    assert!(!selection
+        .routes
+        .contains_key(&("showcase.test".to_string(), 8713)));
+}
+
+#[test]
+fn the_shell_wins_over_the_env_file_and_a_hostname_can_be_chosen() {
+    let options = Options {
+        hostname: Some("Demo.Example.test".into()),
+        domain: None,
+        environment: vec![
+            ("SHOWCASE_WEB".into(), "9001".into()),
+            // Pinned to 0: Docker would pick the port.
+            ("SHOWCASE_API".into(), "0".into()),
+        ],
+    };
+    let found = discover(&showcase(), &options).unwrap();
+
+    assert_eq!(found.hostname, "demo.example.test");
+    let shared: Vec<Option<u16>> = found.shared().map(|port| port.host).collect();
+    assert_eq!(shared, [Some(9001), Some(8712)]);
+    let api = found
+        .left_out()
+        .find(|port| port.label() == "api → 80")
+        .unwrap();
+    assert!(api
+        .left_out
+        .as_ref()
+        .unwrap()
+        .contains("Docker picks its port"));
+    assert_eq!(
+        found.entrypoint().as_deref(),
+        Some("http://demo.example.test:9001")
+    );
+}
+
+#[test]
+fn an_override_file_adds_its_ports_and_profiles_decide_what_starts() {
+    let folder = project("override");
+    std::fs::write(
+        folder.join("docker-compose.override.yml"),
+        "services:\n  web:\n    ports:\n      - \"8443:443\"\n  admin:\n    image: nginx:alpine\n    profiles: [admin]\n    ports:\n      - \"8720:80\"\n  shell:\n    image: linuxserver/openssh-server\n    ports:\n      - \"2222:22\"\n",
+    )
+    .unwrap();
+
+    let found = discover(&folder, &Options::default()).unwrap();
+    assert_eq!(
+        found.sources,
+        ["docker-compose.yml", "docker-compose.override.yml", ".env"]
+    );
+    let shared: Vec<Option<u16>> = found.shared().map(|port| port.host).collect();
+    assert_eq!(shared, [Some(8710), Some(8443), Some(8711), Some(8712)]);
+    // A port 443 makes the entry point HTTPS.
+    assert_eq!(
+        found.entrypoint().as_deref(),
+        Some("https://showcase.test:8443")
+    );
+    let reason = |label: &str| {
+        let port = found.left_out().find(|port| port.label() == label).unwrap();
+        port.left_out.clone().unwrap()
+    };
+    assert_eq!(reason("admin → 80"), "only started with the profile admin");
+    assert_eq!(
+        reason("shell → 22"),
+        "a remote shell is not shared by default"
+    );
+
+    // Asked for, the profile's service is shared like the others.
+    let options = Options {
+        environment: vec![("COMPOSE_PROFILES".into(), "admin".into())],
+        ..Options::default()
+    };
+    let found = discover(&folder, &options).unwrap();
+    assert!(found.shared().any(|port| port.host == Some(8720)));
+
+    std::fs::remove_dir_all(&folder).ok();
+}
+
+#[test]
+fn a_file_written_by_hand_is_kept_and_a_generated_one_is_refreshed() {
+    let folder = project("write");
+    let found = discover(&folder, &Options::default()).unwrap();
+    let path = folder.join(FILE);
+
+    // Nothing there: written.
+    assert_eq!(write(&folder, &found, false).unwrap(), path);
+    let first = std::fs::read_to_string(&path).unwrap();
+    assert!(first.starts_with("# Written by `devshare discover`"));
+
+    // The developer names a control plane in it; the compose file changes;
+    // discover writes the new ports and keeps the control plane.
+    std::fs::write(
+        &path,
+        first.replacen("\n\n", "\n\nserver = \"https://join.example\"\n\n", 1),
+    )
+    .unwrap();
+    std::fs::write(folder.join(".env"), "SHOWCASE_WEB=8730\n").unwrap();
+    let changed = discover(&folder, &Options::default()).unwrap();
+    write(&folder, &changed, false).unwrap();
+    let second: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(second.server.as_deref(), Some("https://join.example"));
+    assert_eq!(second.environments["showcase"].services[0].port, 8730);
+
+    // Without the first line it is the developer's file: left alone.
+    std::fs::write(
+        &path,
+        "[environments.mine]\nservices = [{ host = \"mine.test\", port = 1 }]\n",
+    )
+    .unwrap();
+    let refused = write(&folder, &changed, false).unwrap_err().to_string();
+    assert!(refused.contains("written by hand"), "{refused}");
+    assert!(std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("mine.test"));
+    write(&folder, &changed, true).unwrap();
+    assert!(std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("showcase.test"));
+
+    std::fs::remove_dir_all(&folder).ok();
+}
+
+#[test]
+fn a_folder_without_anything_to_share_says_so() {
+    let folder = std::env::temp_dir().join(format!("devshare-empty-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).unwrap();
+    assert!(discover(&folder, &Options::default())
+        .unwrap_err()
+        .to_string()
+        .contains("no compose file"));
+
+    // Only a database: read, but nothing to write.
+    std::fs::write(
+        folder.join("compose.yaml"),
+        "services:\n  database:\n    image: postgres:16\n    ports: [\"5432:5432\"]\n",
+    )
+    .unwrap();
+    let found = discover(&folder, &Options::default()).unwrap();
+    assert_eq!(found.shared().count(), 0);
+    assert!(write(&folder, &found, false)
+        .unwrap_err()
+        .to_string()
+        .contains("nothing to share"));
+    assert!(!folder.join(FILE).exists());
+
+    std::fs::remove_dir_all(&folder).ok();
+}
+
+#[test]
+fn the_general_settings_choose_what_follows_the_projects_name() {
+    let options = Options {
+        domain: Some("lan".into()),
+        ..Options::default()
+    };
+    let found = discover(&showcase(), &options).unwrap();
+    assert_eq!(found.hostname, "showcase.lan");
+    assert_eq!(
+        found.entrypoint().as_deref(),
+        Some("http://showcase.lan:8710")
+    );
+}

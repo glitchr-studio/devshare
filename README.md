@@ -1,0 +1,107 @@
+# DevShare
+
+Share one or several local development environments with another computer for
+a few minutes, under their own hostnames and ports, over an encrypted
+peer-to-peer link. Nothing is deployed, no port is opened on the sharing
+machine, and nothing else on it becomes reachable.
+
+```text
+$ devshare share ~/Sites/shop
+
+  shop
+    shop.test:8443
+    shop.test:5173
+
+Invitation:
+https://join.glitchr.dev/#gVOxtm5P6ALN7P…
+
+Code:
+7GX2-KLM9
+```
+
+The guest runs `sudo devshare join <invitation>` and opens `https://shop.test:8443`
+in a browser, as if the project ran on their own machine. When the session
+expires or the host stops it, the names and the routes are gone.
+
+## Status
+
+Early and experimental. It works between macOS and Linux computers and is
+covered by automated tests, but:
+
+- the invitation scheme has not had a security review;
+- there is no iPhone, Android or Windows client yet: a phone that opens an
+  invitation gets a page saying so;
+- joining a session needs administrator rights (`sudo`);
+- by default, sessions go through the public relays of the
+  [iroh](https://github.com/n0-computer/iroh) project;
+- no licence has been chosen yet, so all rights are reserved for now.
+
+## How it works
+
+- **The host** reads which ports a project publishes from its Docker Compose
+  file (`devshare discover`, or automatically on the first `devshare share`)
+  and writes them to a `devshare.toml` in the project's folder. Databases,
+  caches, mail servers and shells are left out unless asked for.
+- **The invitation** is one link, also shown as a QR code. It carries the
+  host's identity for the session and the relay it is reachable through.
+- **The link** between host and guest is made by iroh: both sides connect
+  outwards to a relay, then go direct when their networks allow it. Traffic is
+  encrypted end to end.
+- **The guest** gets a temporary network interface and name resolution for the
+  shared hostnames only. Each connection it opens is checked by the host
+  against the list of shared services; everything else is refused.
+
+The page at `join.glitchr.dev` is the single static file in [docs/](docs/). The
+invitation is in the part of the address after the `#`, which a browser never
+sends: the page reads it on the device, and no server is involved.
+
+## Try it
+
+Docker and a Rust toolchain are needed (`brew install rustup` on macOS).
+
+```sh
+make install          # builds the commands into bin/
+source env.sh         # puts bin/ on the PATH of this shell
+make demo             # starts the example project and shares it
+```
+
+`make demo` runs the small project in [tests/showcase](tests/showcase) and
+prints its invitation. On another computer with DevShare:
+
+```sh
+sudo devshare join <invitation>
+```
+
+then open `http://showcase.test:8710`.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `devshare share [folder…]` | Shares the projects in these folders, the current one by default. `--only <name>` keeps some environments, `--duration 15m` and `--guests 3` set the limits. While sharing: `guests`, `revoke <n>`, `invite`. |
+| `devshare join <invitation>` | Joins a session with its link, its QR code's text or its short code. |
+| `devshare discover [folder]` | Writes or refreshes the folder's `devshare.toml` from its compose file. |
+| `devshare settings` | Shows the general settings, common to all projects (`~/.config/devshare/devshare.toml`). |
+| `devshare-server` | A control plane to run on its own. Not needed for local use: `share` starts one when none is running. |
+
+## Layout
+
+```text
+protocol/   manifest, invitation code, messages between guest and host
+core/       the link, the host agent, the guest tunnel, compose discovery
+cli/        devshare
+server/     the control plane: devshare-server
+app/        the desktop host app (Tauri)
+docs/       the public invitation page, served at join.glitchr.dev
+docker/     end-to-end harness: host, guest, control plane, relay
+tests/      showcase/: an example compose project
+```
+
+## Tests
+
+```sh
+make tests    # unit and session tests, in Docker
+make check    # lint
+make e2e      # whole sessions between containers: direct, relayed, and with a
+              # guest that can reach nothing but a relay
+```

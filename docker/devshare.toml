@@ -1,0 +1,22 @@
+# The environments of the harness host. Monitoring is declared but the test
+# does not share it; the database is not declared at all.
+
+[environments.shop]
+entrypoint = "https://shop.test"
+services = [
+  { host = "shop.test", port = 80 },
+  { host = "shop.test", port = 443 },
+  { host = "shop.test", port = 5173 },
+  { host = "api.shop.test", port = 8080 },
+]
+
+[environments.admin]
+entrypoint = "http://admin.test"
+services = [
+  { host = "admin.test", port = 80 },
+]
+
+[environments.monitoring]
+services = [
+  { host = "grafana.test", port = 3000 },
+]

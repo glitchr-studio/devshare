@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer">
+<title>DevShare invitation</title>
+<!--
+  The public invitation page of DevShare: one static file, the same for
+  every invitation. The invitation itself is in what follows the # of the
+  address, which a browser never sends anywhere: this page reads it on the
+  device and shows what to do with it. Nothing here talks to a server.
+-->
+<style>
+:root { color-scheme: light dark; }
+body { font: 16px/1.5 system-ui, sans-serif; margin: 12vh auto 0; max-width: 30rem; padding: 0 1.25rem; }
+h1 { font-size: 1.15rem; margin: 0 0 1.5rem; }
+.code { font: 2rem ui-monospace, Menlo, Consolas, monospace; letter-spacing: 0.08em; margin: 0 0 1.5rem; }
+code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.92em; word-break: break-all; }
+p { margin: 0 0 1rem; }
+button { font: inherit; padding: 0.3rem 0.9rem; border: 1px solid; border-radius: 6px; background: none; color: inherit; }
+.muted { opacity: 0.65; }
+[hidden] { display: none; }
+</style>
+</head>
+<body>
+<main id="invited" hidden>
+  <h1>You are invited to a DevShare session</h1>
+  <p class="code" id="code"></p>
+  <p>On a computer with DevShare, join with this page's address:</p>
+  <p><code id="command"></code></p>
+  <p><button id="copy" type="button">Copy the command</button></p>
+  <p class="muted">DevShare for iPhone, iPad and Android is not available yet: this session can be joined from a computer only.</p>
+</main>
+<main id="nothing" hidden>
+  <h1>DevShare</h1>
+  <p>This is where DevShare invitations open. This address carries none: ask whoever is sharing for their invitation link or QR code.</p>
+</main>
+<script>
+// The code of an invitation, from what follows the # of this address:
+// one byte saying what follows, 32 bytes naming the host, then the code as
+// five bytes, eight characters of five bits each.
+function code(carried) {
+  const alphabet = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+  let bytes;
+  try {
+    const text = atob(carried.replace(/-/g, '+').replace(/_/g, '/'));
+    bytes = Uint8Array.from(text, (character) => character.charCodeAt(0));
+  } catch (error) {
+    return null;
+  }
+  const understood = (bytes[0] & 0x7f) === 1 && (bytes[0] & 0x80) !== 0;
+  if (!understood || bytes.length < 38) return null;
+  let bits = 0n;
+  for (const byte of bytes.slice(33, 38)) bits = (bits << 8n) | BigInt(byte);
+  let characters = '';
+  for (let index = 7; index >= 0; index -= 1) {
+    characters += alphabet[Number((bits >> BigInt(5 * index)) & 31n)];
+  }
+  return `${characters.slice(0, 4)}-${characters.slice(4)}`;
+}
+
+const found = code(location.hash.slice(1));
+if (found) {
+  const command = `devshare join ${location.href}`;
+  document.getElementById('code').textContent = found;
+  document.getElementById('command').textContent = command;
+  document.getElementById('copy').addEventListener('click', async (event) => {
+    await navigator.clipboard.writeText(command);
+    event.currentTarget.textContent = 'Copied';
+  });
+  document.getElementById('invited').hidden = false;
+} else {
+  document.getElementById('nothing').hidden = false;
+}
+</script>
+</body>
+</html>

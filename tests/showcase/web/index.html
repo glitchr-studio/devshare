@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DevShare showcase</title>
+  <link rel="stylesheet" href="showcase.css">
+</head>
+<body>
+  <h1>DevShare showcase</h1>
+  <p>service=web. You are reading this page at <code id="here"></code>.</p>
+  <p>The page below asks two other services of the same project, each on its
+     own port of the same hostname. All three lines turn green when the
+     whole project is reachable, whether you are on the machine that runs
+     it or a guest of a sharing session.</p>
+
+  <table>
+    <tr><th>Service</th><th>Address</th><th>Answer</th></tr>
+    <tr id="web" class="ok"><td>web</td><td><code></code></td><td>this page</td></tr>
+    <tr id="api"><td>api</td><td><code></code></td><td>…</td></tr>
+    <tr id="docs"><td>docs</td><td><code></code></td><td>…</td></tr>
+  </table>
+
+  <script src="showcase.js"></script>
+</body>
+</html>

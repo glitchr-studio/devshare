@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What the DevShare window may ask of the app: its own commands and events.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

@@ -1,0 +1,43 @@
+[package]
+name = "devshare-cli"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Share local development environments for a few minutes"
+
+[[bin]]
+name = "devshare"
+path = "src/main.rs"
+
+[dependencies]
+devshare-protocol.workspace = true
+devshare-core.workspace = true
+devshare-server = { path = "../server" }
+anyhow.workspace = true
+serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap = { version = "4", features = ["derive", "env"] }
+libc = "0.2"
+
+[package.metadata.deb]
+name = "devshare"
+maintainer = "Marco Meyer <37673095+meiyasan@users.noreply.github.com>"
+copyright = "2026, Marco Meyer"
+section = "net"
+priority = "optional"
+# Set by hand: the binaries are linked against glibc 2.28 whatever the build
+# image has (see docker/package.sh).
+depends = "libc6 (>= 2.28)"
+extended-description = """\
+DevShare shares one or several local development environments with another \
+computer for a few minutes, under their real hostnames and ports, over an \
+encrypted peer-to-peer link. Nothing is deployed and nothing else on the \
+machine becomes reachable."""
+assets = [
+    ["target/release/devshare", "usr/bin/", "755"],
+]
+
+[dev-dependencies]
+rqrr = "0.11"

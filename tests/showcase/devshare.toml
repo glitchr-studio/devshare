@@ -1,0 +1,17 @@
+# Written by `devshare discover` from docker-compose.yml, .env.
+# Run it again when the compose file changes. Remove this line to keep the
+# file as you edit it: discover will then leave it alone.
+
+[environments.showcase]
+entrypoint = "http://showcase.test:8710"
+services = [
+  # web → 80
+  { host = "showcase.test", port = 8710, target = "127.0.0.1:8710" },
+  # api → 80
+  { host = "showcase.test", port = 8711, target = "127.0.0.1:8711" },
+  # api → 8125/udp: UDP is not shared yet
+  # docs → 80
+  { host = "showcase.test", port = 8712, target = "127.0.0.1:8712" },
+  # cache → 6379: a cache is not shared by default
+  # { host = "showcase.test", port = 8713, target = "127.0.0.1:8713" },
+]

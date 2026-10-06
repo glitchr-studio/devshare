@@ -1,0 +1,37 @@
+# Laid over compose.yml by docker/remote.sh: a host that shares from behind
+# its own network, with its control plane on its own machine and no port
+# open to anyone, and a guest somewhere else. The two networks have no route
+# between them; the only thing both can reach is a relay, as on the internet.
+services:
+  relay:
+    build: .
+    init: true
+    command: /opt/devshare/relay/bin/iroh-relay --dev
+    volumes:
+      - devshare-target:/opt/devshare:ro
+    networks: [home, office]
+
+  host:
+    depends_on: !override [relay]
+    environment:
+      # No control plane anywhere: the session starts its own, on this machine.
+      DEVSHARE_SERVER: http://localhost:8787
+      DEVSHARE_RELAY: http://relay:3340
+    networks: [home]
+
+  guest:
+    depends_on: !override [relay]
+    environment:
+      DEVSHARE_SERVER: http://localhost:8787
+      DEVSHARE_RELAY: http://relay:3340
+    networks: [office]
+
+networks:
+  home:
+    ipam:
+      config:
+        - subnet: 10.213.13.0/24
+  office:
+    ipam:
+      config:
+        - subnet: 10.213.14.0/24

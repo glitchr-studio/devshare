@@ -1,0 +1,53 @@
+# The DevShare showcase: one small project that publishes several ports, to
+# check that a guest gets all of them under one hostname.
+#
+#   docker compose up -d        then http://localhost:8710
+#   devshare discover           writes devshare.toml from this file
+#   devshare share              shares what it lists
+#
+# The ports come from .env, as in a real project; the numbers after `:-` are
+# what Compose would use without it.
+name: showcase
+
+services:
+  # The page a guest opens. From the browser it calls the two other
+  # services, each on its own port.
+  web:
+    image: nginx:alpine
+    ports:
+      - "${SHOWCASE_WEB:-8080}:80"
+    volumes:
+      - ./web:/usr/share/nginx/html:ro
+
+  # A JSON API on a second port. It answers with the hostname it was asked for.
+  api:
+    image: nginx:alpine
+    ports:
+      - "${SHOWCASE_API:-8081}:80"
+      - "${SHOWCASE_METRICS:-8125}:8125/udp"
+    volumes:
+      - ./api/default.conf:/etc/nginx/conf.d/default.conf:ro
+
+  # A third port, in the long form, published on this machine only.
+  docs:
+    image: nginx:alpine
+    ports:
+      - target: 80
+        published: "${SHOWCASE_DOCS:-8082}"
+        host_ip: 127.0.0.1
+    volumes:
+      - ./docs:/usr/share/nginx/html:ro
+
+  # Published too, and never shared unless asked for: a cache.
+  cache:
+    image: redis:alpine
+    ports:
+      - "${SHOWCASE_CACHE:-6379}:6379"
+
+# A subnet of its own: Docker's pool of addresses runs out on a machine with
+# many projects, and the showcase must start whatever else is running.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.213.20.0/24

@@ -1,0 +1,60 @@
+# Three machines: the control plane, a developer sharing local services, and
+# a guest who only has the invitation code.
+name: devshare-e2e
+
+x-machine: &machine
+  build: .
+  init: true
+  environment:
+    PATH: /opt/devshare/${PROFILE:-debug}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    DEVSHARE_SERVER: http://control:8787
+    # The harness tests the link and the page of the control plane itself.
+    DEVSHARE_JOIN: ""
+    # The harness must not depend on relays on the internet.
+    DEVSHARE_RELAY: disabled
+
+services:
+  control:
+    <<: *machine
+    command: devshare-server
+    volumes:
+      - devshare-target:/opt/devshare:ro
+
+  host:
+    <<: *machine
+    command: /harness/host.sh
+    depends_on: [control]
+    # The developer's own names for local services, as in a hosts file.
+    extra_hosts:
+      - "shop.test:127.0.0.2"
+      - "api.shop.test:127.0.0.2"
+      - "admin.test:127.0.0.3"
+      - "grafana.test:127.0.0.4"
+    volumes:
+      - devshare-target:/opt/devshare:ro
+      - .:/harness:ro
+      - shared:/shared
+
+  guest:
+    <<: *machine
+    command: sleep infinity
+    depends_on: [control]
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun"]
+    volumes:
+      - devshare-target:/opt/devshare:ro
+      - .:/harness:ro
+      - shared:/shared
+
+volumes:
+  devshare-target:
+    external: true
+  shared:
+
+# Named subnets: Docker's own pool of addresses runs out on a machine with
+# many projects, and the harness must not depend on what else is running.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.213.10.0/24

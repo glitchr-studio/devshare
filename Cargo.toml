@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = ["protocol", "core", "cli", "server", "app"]
+# The desktop app needs a system web view to build: it is left out of what
+# the Docker targets compile and built natively (make app).
+default-members = ["protocol", "core", "cli", "server"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+devshare-protocol = { path = "protocol" }
+devshare-core = { path = "core" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal", "process", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+strip = true

@@ -1,0 +1,10 @@
+:root { color-scheme: light dark; }
+body { font: 15px/1.5 system-ui, sans-serif; margin: 3rem auto; max-width: 40rem; padding: 0 1rem; }
+h1 { font-size: 1.4rem; }
+code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.92em; }
+table { border-collapse: collapse; width: 100%; margin-top: 1.5rem; }
+th, td { text-align: left; padding: 0.5rem 0.75rem 0.5rem 0; border-bottom: 1px solid color-mix(in srgb, currentColor 18%, transparent); }
+th { font-size: 0.75rem; letter-spacing: 0.04em; text-transform: uppercase; opacity: 0.6; }
+tr td:first-child::before { content: "●"; margin-right: 0.5rem; opacity: 0.3; }
+tr.ok td:first-child::before { color: #1f8a4c; opacity: 1; }
+tr.failed td:first-child::before { color: #b3261e; opacity: 1; }

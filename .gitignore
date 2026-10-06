@@ -1,0 +1,6 @@
+target/
+.DS_Store
+target-macos/
+dist/
+app/gen/
+bin/

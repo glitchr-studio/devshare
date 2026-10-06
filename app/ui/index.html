@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DevShare</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <main id="setup" hidden>
+    <header class="bar">
+      <h1>Share environments</h1>
+    </header>
+
+    <p id="ended" class="notice" hidden></p>
+
+    <section id="undeclared" hidden>
+      <p>No project yet. Add the folder of a project that has a Docker Compose file: DevShare reads the ports it publishes.</p>
+    </section>
+
+    <form id="choose" hidden>
+      <ul id="environments" class="environments"></ul>
+
+      <div class="options">
+        <label>For
+          <select id="minutes">
+            <option value="5">5 minutes</option>
+            <option value="15">15 minutes</option>
+            <option value="30">30 minutes</option>
+            <option value="60">1 hour</option>
+          </select>
+        </label>
+        <label>with up to
+          <input id="limit" type="number" min="1" max="50" value="3">
+          guests
+        </label>
+        <button id="share" type="submit" class="primary">Share</button>
+      </div>
+      <p id="error" class="error" role="alert"></p>
+    </form>
+
+    <section class="add">
+      <h2>Add a project</h2>
+      <form id="add">
+        <input id="folder" type="text" placeholder="Drop a project's folder on this window, or type its path" spellcheck="false" autocomplete="off">
+        <button type="submit">Add</button>
+        <button id="reload" type="button">Read again</button>
+      </form>
+      <p id="added" class="muted"></p>
+      <ul id="problems" class="problems"></ul>
+      <p class="muted">Each project keeps its environments in its own folder, in <code>devshare.toml</code>. What is common to all of them, such as the usual duration, is in <code id="path"></code>.</p>
+    </section>
+  </main>
+
+  <main id="session" hidden>
+    <header class="bar">
+      <h1>Sharing <span id="shared-names"></span></h1>
+      <span class="countdown"><span id="remaining"></span> left</span>
+      <button id="stop" type="button">Stop sharing</button>
+    </header>
+
+    <div class="columns">
+      <div class="column">
+        <section>
+          <h2>Invitation</h2>
+          <div id="invitation" class="invitation">
+            <div id="qr" class="qr"></div>
+            <div>
+              <p id="code" class="code"></p>
+              <p class="actions">
+                <button id="copy-link" type="button">Copy link</button>
+                <button id="copy-code" type="button">Copy code</button>
+              </p>
+            </div>
+          </div>
+          <p id="reach" class="muted reach"></p>
+          <div id="withdrawn" hidden>
+            <p>The invitation was withdrawn with the guest you disconnected, so that they cannot come back. Nobody else can join until you issue a new one.</p>
+            <button id="invite" type="button" class="primary">New invitation</button>
+          </div>
+        </section>
+
+        <section>
+          <h2>Shared</h2>
+          <div id="shared"></div>
+        </section>
+      </div>
+
+      <div class="column">
+        <section>
+          <h2>Connected <span id="count" class="muted"></span></h2>
+          <p id="nobody" class="muted">Nobody has joined yet.</p>
+          <ul id="connected" class="guests"></ul>
+        </section>
+
+        <section>
+          <h2>Activity</h2>
+          <ul id="notices" class="notices"></ul>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
