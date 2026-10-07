@@ -49,8 +49,14 @@ impl Helper {
                  Start it again with: sudo devshare-helper install"
             )
         })?;
-        stream.set_read_timeout(Some(ANSWER))?;
-        stream.set_write_timeout(Some(ANSWER))?;
+        // On macOS, setting an option on a socket the other side has already
+        // closed fails: that is what a helper refusing this user looks like,
+        // when it closes before this line is reached.
+        let timed = stream.set_read_timeout(Some(ANSWER)).is_ok()
+            && stream.set_write_timeout(Some(ANSWER)).is_ok();
+        if !timed {
+            return Err(refused_user());
+        }
 
         let mut helper = Self { stream };
         // A user the helper does not know gets no answer at all: it closes
@@ -257,17 +263,25 @@ mod tests {
 
     #[test]
     fn a_user_the_helper_does_not_know_is_told_how_to_be_added() {
-        let path = socket("refused");
-        let listener = UnixListener::bind(&path).unwrap();
-        let helper = thread::spawn(move || drop(listener.accept().unwrap()));
+        // Whether the helper closes before or after the client is ready to
+        // talk, the client gives the same instructions.
+        for wait in [Duration::ZERO, Duration::from_millis(100)] {
+            let path = socket("refused");
+            let listener = UnixListener::bind(&path).unwrap();
+            let helper = thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                thread::sleep(wait);
+                drop(stream);
+            });
 
-        let error = Helper::connect_to(&path).err().unwrap().to_string();
-        assert!(
-            error.contains("sudo devshare-helper install --user"),
-            "{error}"
-        );
-        helper.join().unwrap();
-        std::fs::remove_file(&path).ok();
+            let error = Helper::connect_to(&path).err().unwrap().to_string();
+            assert!(
+                error.contains("sudo devshare-helper install --user"),
+                "{error}"
+            );
+            helper.join().unwrap();
+            std::fs::remove_file(&path).ok();
+        }
     }
 
     #[test]

@@ -1,0 +1,93 @@
+# The public server's topology, tested locally: Caddy in front, the relay and
+# the control plane on a network only Caddy reaches, a host and a guest on
+# two networks that cannot reach each other. Plain HTTP: certificates are the
+# one thing only the real server can show.
+name: devshare-public-test
+
+x-machine: &machine
+  build: ../../docker
+  init: true
+  environment: &environment
+    PATH: /opt/devshare/debug:/opt/devshare/relay/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    DEVSHARE_SERVER: http://relay.join.test
+    DEVSHARE_RELAY: http://relay.join.test
+    # The link points at the control plane, so that both of its forms are
+    # exercised: the link and the typed code.
+    DEVSHARE_JOIN: ""
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      backend:
+      home:
+        aliases: [relay.join.test]
+      office:
+        aliases: [relay.join.test]
+
+  relay:
+    <<: *machine
+    command: iroh-relay --config-path /etc/devshare/relay.toml
+    volumes:
+      - devshare-target:/opt/devshare:ro
+      - ./relay.toml:/etc/devshare/relay.toml:ro
+    networks: [backend]
+
+  control:
+    <<: *machine
+    command: devshare-server
+    environment:
+      <<: *environment
+      DEVSHARE_LISTEN: 0.0.0.0:8787
+      DEVSHARE_TRUST_PROXY: "1"
+    volumes:
+      - devshare-target:/opt/devshare:ro
+    networks: [backend]
+
+  host:
+    <<: *machine
+    command: /harness/host.sh
+    depends_on: [caddy, relay, control]
+    extra_hosts:
+      - "shop.test:127.0.0.2"
+      - "api.shop.test:127.0.0.2"
+      - "admin.test:127.0.0.3"
+      - "grafana.test:127.0.0.4"
+    volumes:
+      - devshare-target:/opt/devshare:ro
+      - ../../docker:/harness:ro
+      - shared:/shared
+    networks: [home]
+
+  guest:
+    <<: *machine
+    command: sleep infinity
+    depends_on: [caddy]
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun"]
+    volumes:
+      - devshare-target:/opt/devshare:ro
+      - ../../docker:/harness:ro
+      - shared:/shared
+    networks: [office]
+
+volumes:
+  devshare-target:
+    external: true
+  shared:
+
+networks:
+  backend:
+    ipam:
+      config:
+        - subnet: 10.213.15.0/24
+  home:
+    ipam:
+      config:
+        - subnet: 10.213.16.0/24
+  office:
+    ipam:
+      config:
+        - subnet: 10.213.17.0/24

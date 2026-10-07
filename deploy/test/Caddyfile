@@ -1,0 +1,14 @@
+# The public server's routing, over plain HTTP: what deploy/test.sh checks.
+{
+	auto_https off
+}
+
+http://relay.join.test {
+	@control path /v2 /v2/*
+	handle @control {
+		reverse_proxy control:8787
+	}
+	handle {
+		reverse_proxy relay:3340
+	}
+}

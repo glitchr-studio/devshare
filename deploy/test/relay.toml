@@ -1,0 +1,5 @@
+# The relay of deploy/test.sh: plain HTTP behind Caddy, no address discovery
+# (that needs a certificate).
+enable_relay = true
+http_bind_addr = "0.0.0.0:3340"
+enable_metrics = false

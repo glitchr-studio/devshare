@@ -1,0 +1,10 @@
+# What the public server's image build does not need: build outputs,
+# packages, and this machine's own files.
+target
+target-macos
+dist
+bin
+app/gen
+.git
+.claude
+**/.DS_Store

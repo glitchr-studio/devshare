@@ -15,7 +15,7 @@ RUST = docker run --rm \
 	-w /work rust:1-bookworm
 CARGO = $(RUST) cargo
 
-.PHONY: build release test tests check e2e deb dist-macos relay macos ios app dmg showcase demo install uninstall clean
+.PHONY: build release test tests check e2e deploy deb dist-macos relay macos ios app dmg showcase demo install uninstall clean
 
 build:
 	$(CARGO) build
@@ -39,6 +39,13 @@ e2e: build relay
 	docker/e2e.sh relayed
 	docker/e2e.sh helper
 	docker/remote.sh
+	deploy/test.sh
+
+# The public server (relay and control plane behind Caddy) from deploy/, on
+# the machine DEVSHARE_HOST points at. See deploy/compose.yml.
+deploy:
+	@test -n "$(DEVSHARE_HOST)" || { echo "set DEVSHARE_HOST, e.g. make deploy DEVSHARE_HOST=relay.join.glitchr.dev"; exit 1; }
+	DEVSHARE_HOST=$(DEVSHARE_HOST) docker compose -f deploy/compose.yml up -d --build
 
 # dist/: a .deb and a tarball for amd64 and arm64.
 deb:

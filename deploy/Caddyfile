@@ -1,0 +1,16 @@
+# One name, two services. The relay keeps its own paths (/relay, /ping,
+# /generate_204): only the control plane's are taken out.
+{$DEVSHARE_HOST} {
+	@control path /v2 /v2/*
+	handle @control {
+		reverse_proxy control:8787
+	}
+	handle {
+		# The relay speaks HTTPS itself, with the same certificate.
+		reverse_proxy https://relay:3443 {
+			transport http {
+				tls_server_name {$DEVSHARE_HOST}
+			}
+		}
+	}
+}

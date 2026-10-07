@@ -1,0 +1,29 @@
+# iroh-relay behind Caddy. Its HTTPS listener stays inside the compose
+# network, where only Caddy reaches it; its QUIC listener faces the internet
+# for address discovery, which is what lets two machines behind routers find
+# a direct route. Both use the certificate Caddy obtained.
+
+enable_relay = true
+enable_quic_addr_discovery = true
+# Plain HTTP serves only the relay's captive-portal check; inside the network.
+http_bind_addr = "0.0.0.0:3340"
+enable_metrics = false
+
+[tls]
+https_bind_addr = "0.0.0.0:3443"
+quic_bind_addr = "0.0.0.0:7842"
+cert_mode = "Reloading"
+# Where Caddy keeps the certificate of DEVSHARE_HOST. The relay reads the
+# name from the path: replace relay.join.glitchr.dev if you deploy elsewhere.
+manual_cert_path = "/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/relay.join.glitchr.dev/relay.join.glitchr.dev.crt"
+manual_key_path = "/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/relay.join.glitchr.dev/relay.join.glitchr.dev.key"
+
+# A relay carries traffic for anyone who reaches it: each client is held to
+# a steady 2 MiB/s, bursts of 8 MiB, and new connections to 20 a second.
+[limits]
+accept_conn_limit = 20.0
+accept_conn_burst = 100
+
+[limits.client.rx]
+bytes_per_second = 2097152
+max_burst_bytes = 8388608

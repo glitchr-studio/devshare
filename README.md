@@ -106,6 +106,30 @@ refuses names outside the test domains unless root lists a domain in
 | `devshare-helper` | `install`, `uninstall`, `run`: the part that needs root on a guest's computer, see above. |
 | `devshare-server` | A control plane to run on its own. Not needed for local use: `share` starts one when none is running. |
 
+## The public server
+
+Sessions work without one: the invitation link carries everything a guest
+needs, and both sides reach each other through a relay. A public server adds
+a relay of one's own, instead of the public relays of the iroh project, and a
+control plane, so that the short code typed by hand works from any network.
+Both run at one name, behind Caddy, from [deploy/](deploy/):
+
+```sh
+# on the server, which the name points at, with TCP 80 and 443 and UDP 7842 open
+make deploy DEVSHARE_HOST=relay.join.glitchr.dev
+```
+
+Clients then use it with two lines in `~/.config/devshare/devshare.toml`:
+
+```toml
+server = "https://relay.join.glitchr.dev"
+relay = "https://relay.join.glitchr.dev"
+```
+
+The control plane never sees an invitation code: it stores a slow key derived
+from it, which lets a guest find a host but not join it. `deploy/test.sh`
+checks the same routing locally, over plain HTTP.
+
 ## Layout
 
 ```text
@@ -115,6 +139,7 @@ cli/        devshare
 server/     the control plane: devshare-server
 app/        the desktop host app (Tauri)
 docs/       the public invitation page, served at join.glitchr.dev
+deploy/     the public server: relay and control plane behind Caddy
 docker/     end-to-end harness: host, guest, control plane, relay
 tests/      showcase/: an example compose project
 ```

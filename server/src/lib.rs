@@ -48,6 +48,33 @@ struct Invitation {
 pub struct Registry {
     invitations: Arc<Mutex<HashMap<String, Invitation>>>,
     buckets: Arc<Mutex<HashMap<IpAddr, Bucket>>>,
+    /// Behind a reverse proxy, every request comes from the proxy: the
+    /// client's address is then the one the proxy adds to `X-Forwarded-For`.
+    /// Set by `DEVSHARE_TRUST_PROXY=1`, and only honoured for requests from
+    /// a private address, where such a proxy would be.
+    trust_proxy: bool,
+}
+
+impl Registry {
+    /// Who is asking, for the rate limits.
+    fn client(&self, from: SocketAddr, headers: &HeaderMap) -> IpAddr {
+        let peer = from.ip();
+        let behind = match peer {
+            IpAddr::V4(ip) => ip.is_private() || ip.is_loopback(),
+            IpAddr::V6(ip) => ip.is_loopback() || (ip.segments()[0] & 0xfe00) == 0xfc00,
+        };
+        if !(self.trust_proxy && behind) {
+            return peer;
+        }
+        // The rightmost entry is the one our proxy added; anything to its
+        // left came from the client and proves nothing.
+        headers
+            .get("x-forwarded-for")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.rsplit(',').next())
+            .and_then(|last| last.trim().parse().ok())
+            .unwrap_or(peer)
+    }
 }
 
 impl Registry {
@@ -172,7 +199,10 @@ pub fn router(registry: Registry) -> Router {
 
 /// Serves until the listener fails, forgetting expired invitations as it goes.
 pub async fn serve(listener: tokio::net::TcpListener) -> std::io::Result<()> {
-    let registry = Registry::default();
+    let registry = Registry {
+        trust_proxy: std::env::var("DEVSHARE_TRUST_PROXY").is_ok_and(|value| value == "1"),
+        ..Registry::default()
+    };
     tokio::spawn({
         let registry = registry.clone();
         async move {
@@ -190,9 +220,10 @@ pub async fn serve(listener: tokio::net::TcpListener) -> std::io::Result<()> {
 async fn create(
     State(registry): State<Registry>,
     ConnectInfo(from): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(request): Json<CreateInvitation>,
 ) -> Result<Json<InvitationCreated>, StatusCode> {
-    if !registry.allow(from.ip(), COST_CREATE) {
+    if !registry.allow(registry.client(from, &headers), COST_CREATE) {
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
     if request.ttl == 0 {
@@ -233,9 +264,10 @@ async fn create(
 async fn lookup(
     State(registry): State<Registry>,
     ConnectInfo(from): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Path(lookup): Path<String>,
 ) -> Result<Json<InvitationLookup>, StatusCode> {
-    if !registry.allow(from.ip(), COST_LOOKUP) {
+    if !registry.allow(registry.client(from, &headers), COST_LOOKUP) {
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
     let invitations = registry.invitations.lock().unwrap();
@@ -252,9 +284,11 @@ async fn lookup(
 async fn page(
     State(registry): State<Registry>,
     ConnectInfo(from): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Path(asked): Path<String>,
 ) -> (StatusCode, axum::response::Html<String>) {
-    if !registry.allow(from.ip(), COST_LOOKUP) {
+    let from = registry.client(from, &headers);
+    if !registry.allow(from, COST_LOOKUP) {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             axum::response::Html(PAGE.replace("{body}", PAGE_SLOW_DOWN)),
@@ -262,7 +296,7 @@ async fn page(
     }
     // Said to whoever runs this: the one sign that a device which scanned
     // the QR code did reach this machine.
-    tracing::info!("the invitation page was opened from {}", from.ip());
+    tracing::info!("the invitation page was opened from {from}");
     // The control plane does not know codes: the page shows the one in its
     // address, which only the host can confirm.
     let known = code::parse(&asked);
@@ -319,7 +353,7 @@ async fn withdraw(
     Path(lookup): Path<String>,
     headers: HeaderMap,
 ) -> StatusCode {
-    if !registry.allow(from.ip(), COST_LOOKUP) {
+    if !registry.allow(registry.client(from, &headers), COST_LOOKUP) {
         return StatusCode::TOO_MANY_REQUESTS;
     }
     let presented = headers
@@ -343,6 +377,33 @@ async fn withdraw(
 mod tests {
     use super::{local_port, Registry, BURST, COST_CREATE, COST_LOOKUP};
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn behind_a_proxy_the_client_is_the_address_the_proxy_added() {
+        use axum::http::HeaderMap;
+        use std::net::SocketAddr;
+
+        let mut headers = HeaderMap::new();
+        // A client that forges an entry, then the one our proxy appended.
+        headers.insert("x-forwarded-for", "1.2.3.4, 203.0.113.9".parse().unwrap());
+        let proxy: SocketAddr = "172.20.0.5:40000".parse().unwrap();
+        let stranger: SocketAddr = "198.51.100.7:40000".parse().unwrap();
+
+        let trusting = Registry {
+            trust_proxy: true,
+            ..Registry::default()
+        };
+        assert_eq!(
+            trusting.client(proxy, &headers),
+            "203.0.113.9".parse::<IpAddr>().unwrap()
+        );
+        // Straight from the internet, the header is the client's own claim.
+        assert_eq!(trusting.client(stranger, &headers), stranger.ip());
+        // Not behind a proxy: the header is never read.
+        assert_eq!(Registry::default().client(proxy, &headers), proxy.ip());
+        // No header: the peer.
+        assert_eq!(trusting.client(proxy, &HeaderMap::new()), proxy.ip());
+    }
 
     #[test]
     fn an_address_gets_a_burst_then_one_token_a_second_and_loopback_is_free() {
