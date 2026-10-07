@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "certificates")]
+pub mod authority;
 pub mod code;
 pub mod helper;
 pub mod names;

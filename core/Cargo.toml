@@ -6,7 +6,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-devshare-protocol.workspace = true
+devshare-protocol = { workspace = true, features = ["certificates"] }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -31,6 +31,8 @@ gethostname = "1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 sha2 = "0.11"
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }
+time = "0.3"
 # Not used directly. libc 0.2.190 no longer defines `in6_ifreq` on iOS, which
 # netdev 0.46 (through iroh) needs there: without this pin the core does not
 # build for iOS. Remove once either crate is fixed.
@@ -38,7 +40,7 @@ libc = "=0.2.189"
 nix = { version = "0.31", features = ["socket", "uio", "fs", "user"] }
 
 [dev-dependencies]
+x509-parser = "0.18"
 rqrr = "0.11"
-rcgen = "0.14"
 devshare-server = { path = "../server" }
 tokio = { workspace = true, features = ["test-util"] }

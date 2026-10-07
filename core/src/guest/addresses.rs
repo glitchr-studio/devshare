@@ -19,6 +19,8 @@ pub struct AddressPlan {
     by_name: HashMap<String, Ipv4Addr>,
     by_address: HashMap<Ipv4Addr, String>,
     ports: HashMap<String, Vec<u16>>,
+    /// The certificate the host saw on each TLS service, by name and port.
+    pins: HashMap<(String, u16), String>,
 }
 
 impl AddressPlan {
@@ -47,11 +49,16 @@ impl AddressPlan {
             .collect();
 
         let mut ports: HashMap<String, Vec<u16>> = HashMap::new();
+        let mut pins = HashMap::new();
         for service in manifest.environments.values().flat_map(|env| &env.services) {
-            ports
-                .entry(normalize_host(&service.host))
-                .or_default()
-                .push(service.port);
+            let name = normalize_host(&service.host);
+            if let Some(tls) = &service.tls {
+                pins.insert(
+                    (name.clone(), service.port),
+                    tls.sha256.to_ascii_lowercase(),
+                );
+            }
+            ports.entry(name).or_default().push(service.port);
         }
 
         Ok(Self {
@@ -59,6 +66,7 @@ impl AddressPlan {
             by_address: names.iter().map(|(name, ip)| (*ip, name.clone())).collect(),
             names,
             ports,
+            pins,
         })
     }
 
@@ -97,6 +105,12 @@ impl AddressPlan {
         self.ports
             .get(name)
             .is_some_and(|ports| ports.contains(&port))
+    }
+
+    /// The SHA-256 of the certificate the host saw on `name:port`, when the
+    /// service speaks TLS.
+    pub fn pin(&self, name: &str, port: u16) -> Option<&str> {
+        self.pins.get(&(name.to_string(), port)).map(String::as_str)
     }
 }
 

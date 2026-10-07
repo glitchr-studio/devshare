@@ -1259,11 +1259,13 @@ dependencies = [
  "sha2 0.11.0",
  "simple-dns",
  "spake2",
+ "time",
  "tokio",
  "tokio-rustls",
  "toml 0.8.23",
  "tracing",
  "tun",
+ "x509-parser",
 ]
 
 [[package]]
@@ -1271,6 +1273,7 @@ name = "devshare-helper"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "clap",
  "devshare-protocol",
  "nix",
@@ -1284,8 +1287,11 @@ dependencies = [
 name = "devshare-protocol"
 version = "0.1.0"
 dependencies = [
+ "rcgen",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
+ "x509-parser",
 ]
 
 [[package]]

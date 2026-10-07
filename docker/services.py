@@ -91,6 +91,8 @@ def main():
         if tls:
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             context.load_cert_chain(certificate, key)
+            # What it speaks, said in the handshake: HTTP/1.1, not HTTP/2.
+            context.set_alpn_protocols(["http/1.1"])
             server.socket = context.wrap_socket(server.socket, server_side=True)
         threading.Thread(target=server.serve_forever, daemon=True).start()
     print("services ready", flush=True)

@@ -5,12 +5,16 @@
 //! descriptor. The guest's process, running as the user, does everything
 //! else.
 //!
+//! It also makes the system trust the guest device's own certificate
+//! authority, after checking it can only vouch for development names.
+//!
 //! Installed once with `sudo devshare-helper install`, it runs at boot and
 //! listens on a Unix socket; it serves the users recorded at installation
 //! and closes the connection of anyone else before reading a byte.
 
 mod install;
 mod serve;
+mod trust;
 
 use std::path::PathBuf;
 
@@ -75,6 +79,7 @@ fn main() -> Result<()> {
             socket,
             users,
             trusted_domains,
+            store: trust::Store::default(),
         }),
     }
 }

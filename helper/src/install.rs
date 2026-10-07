@@ -72,6 +72,7 @@ pub fn install(users: &[String]) -> Result<()> {
 pub fn uninstall() -> Result<()> {
     crate::must_be_root("uninstalling the helper")?;
     stop().ok();
+    crate::trust::untrust_all(&crate::trust::Store::default());
     for path in [BINARY, crate::USERS, devshare_protocol::helper::SOCKET] {
         fs::remove_file(path).ok();
     }

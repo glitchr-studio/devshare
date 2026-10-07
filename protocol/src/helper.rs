@@ -12,6 +12,8 @@
 //! {"up":{"names":[…],"address":…,"resolver":…,"prefix":24}}
 //!                                                 {"up":{"interface":"utun5"}} and the descriptor
 //! {"down":{}}                                     {"down":{}}
+//! {"trust_ca":{"certificate":"-----BEGIN…"}}      {"trusted":{"sha256":"…"}}
+//! {"untrust_ca":{"sha256":"…"}}                   {"untrusted":{}}
 //! ```
 //!
 //! Anything refused is answered `{"error":"…"}`.
@@ -31,6 +33,22 @@ pub const HELPER_PROTOCOL: u32 = 1;
 pub const SOCKET: &str = "/var/run/devshare/helper.sock";
 #[cfg(not(target_os = "macos"))]
 pub const SOCKET: &str = "/run/devshare/helper.sock";
+
+/// Where the helper records the authorities it made the system trust, one
+/// `<sha256> <uid>` per line. Readable by everyone: a guest checks there
+/// whether its own is trusted.
+pub const TRUSTED_CAS: &str = "/etc/devshare/trusted-cas";
+
+/// How many authorities one user may have trusted at once: the current one
+/// and the one it replaces, while it is renewed.
+pub const MOST_CAS_PER_USER: usize = 2;
+
+/// Whether the helper recorded `sha256` as trusted, in `record`'s text.
+pub fn records(record: &str, sha256: &str) -> bool {
+    record
+        .lines()
+        .any(|line| line.split_whitespace().next() == Some(sha256))
+}
 
 /// Upper bound of a message: 241 names of 253 characters fit, with room.
 pub const MAX_MESSAGE: usize = 128 * 1024;
@@ -54,9 +72,16 @@ pub enum Request {
     },
     Up(Up),
     Down {},
-    /// Reserved for the certificate authority a guest's device will make for
-    /// itself. Refused today.
-    TrustCa(serde_json::Value),
+    /// Makes the system trust the device's own certificate authority. Its
+    /// certificate only, in PEM; what is accepted is in
+    /// [`crate::authority`].
+    TrustCa {
+        certificate: String,
+    },
+    /// Stops trusting an authority the same user had trusted.
+    UntrustCa {
+        sha256: String,
+    },
 }
 
 /// The interface a session needs, and the names to resolve through it.
@@ -96,6 +121,10 @@ pub enum Outcome {
         interface: String,
     },
     Down {},
+    Trusted {
+        sha256: String,
+    },
+    Untrusted {},
     Error(String),
 }
 

@@ -8,3 +8,13 @@ license.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+sha2 = { version = "0.11", optional = true }
+x509-parser = { version = "0.18", optional = true, features = ["verify"] }
+
+[dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+
+[features]
+# The checks on a device's own certificate authority: for the guest and the
+# helper, not for every user of the protocol.
+certificates = ["dep:sha2", "dep:x509-parser"]

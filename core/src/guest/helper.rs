@@ -136,6 +136,33 @@ impl Helper {
         }
     }
 
+    /// Makes the system trust this device's own certificate authority, its
+    /// certificate in PEM. Returns its SHA-256, as the helper recorded it.
+    pub fn trust_ca(&mut self, certificate: &str) -> Result<String> {
+        let request = Request::TrustCa {
+            certificate: certificate.to_string(),
+        };
+        match self.ask(&request).context("asking DevShare's helper")? {
+            (Reply::Outcome(Outcome::Trusted { sha256 }), _) => {
+                Ok(devshare_protocol::clean(&sha256, 64))
+            }
+            (Reply::Outcome(Outcome::Error(error)), _) => Err(refusal(&error)),
+            _ => bail!("DevShare's helper gave an unexpected answer"),
+        }
+    }
+
+    /// Stops trusting an authority this user had the helper trust.
+    pub fn untrust_ca(&mut self, sha256: &str) -> Result<()> {
+        let request = Request::UntrustCa {
+            sha256: sha256.to_string(),
+        };
+        match self.ask(&request).context("asking DevShare's helper")? {
+            (Reply::Outcome(Outcome::Untrusted {}), _) => Ok(()),
+            (Reply::Outcome(Outcome::Error(error)), _) => Err(refusal(&error)),
+            _ => bail!("DevShare's helper gave an unexpected answer"),
+        }
+    }
+
     /// One request, one reply, and the descriptor that came with it if any.
     fn ask(&mut self, request: &Request) -> Result<(Reply, Option<OwnedFd>)> {
         self.stream.write_all(&helper::encode(request))?;
@@ -189,6 +216,21 @@ fn receive(stream: &UnixStream, chunk: &mut [u8]) -> Result<(usize, Vec<RawFd>)>
         fcntl(borrowed, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).ok();
     }
     Ok((message.bytes, descriptors))
+}
+
+/// What the helper said when it refused; an older helper refuses what it
+/// does not know with words of its own.
+fn refusal(error: &str) -> anyhow::Error {
+    if error.contains("not in this version") {
+        return anyhow!(
+            "DevShare's helper is older than this guest: install this version's with \
+             sudo devshare-helper install"
+        );
+    }
+    anyhow!(
+        "DevShare's helper refused: {}",
+        devshare_protocol::clean(error, 400)
+    )
 }
 
 fn login() -> String {

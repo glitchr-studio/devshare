@@ -150,7 +150,7 @@ impl DeviceSecret {
 }
 
 /// `DEVSHARE_DATA`, else the user's data folder for DevShare.
-fn data_folder() -> Result<PathBuf> {
+pub(crate) fn data_folder() -> Result<PathBuf> {
     if let Some(folder) = std::env::var_os("DEVSHARE_DATA") {
         return Ok(PathBuf::from(folder));
     }
@@ -177,7 +177,7 @@ fn is_root() -> bool {
 }
 
 /// Under sudo, what was created belongs to the user who asked.
-fn give_back(path: &std::path::Path) {
+pub(crate) fn give_back(path: &std::path::Path) {
     if !is_root() {
         return;
     }

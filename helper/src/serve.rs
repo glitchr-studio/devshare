@@ -25,12 +25,15 @@ use devshare_protocol::{
     system_dns::{self, Installed},
 };
 use nix::sys::socket::{sendmsg, ControlMessage, MsgFlags};
+
+use crate::trust;
 use tun::AbstractDevice;
 
 pub struct Options {
     pub socket: PathBuf,
     pub users: PathBuf,
     pub trusted_domains: PathBuf,
+    pub store: trust::Store,
 }
 
 /// The interface and the names of one guest's session, held until the
@@ -145,11 +148,24 @@ fn serve(mut stream: UnixStream, options: &Options, active: &Active) {
                 take_down(uid, &mut session, active);
                 send(&mut stream, &Reply::Outcome(Outcome::Down {}), None)
             }
-            Request::TrustCa(_) => send(
-                &mut stream,
-                &Reply::Outcome(Outcome::Error("not in this version of the helper".into())),
-                None,
-            ),
+            Request::TrustCa { certificate } => {
+                let domains = trusted(&options.trusted_domains);
+                let outcome = match trust::trust(&options.store, uid, &certificate, domains) {
+                    Ok(sha256) => Outcome::Trusted { sha256 },
+                    Err(error) => {
+                        tracing::warn!("refused to trust an authority for uid {uid}: {error:#}");
+                        Outcome::Error(format!("{error:#}"))
+                    }
+                };
+                send(&mut stream, &Reply::Outcome(outcome), None)
+            }
+            Request::UntrustCa { sha256 } => {
+                let outcome = match trust::untrust(&options.store, uid, &sha256) {
+                    Ok(()) => Outcome::Untrusted {},
+                    Err(error) => Outcome::Error(format!("{error:#}")),
+                };
+                send(&mut stream, &Reply::Outcome(outcome), None)
+            }
         };
         if outcome.is_err() {
             break;
@@ -414,6 +430,7 @@ mod tests {
             socket: PathBuf::new(),
             users: PathBuf::new(),
             trusted_domains: file("trusted-empty", ""),
+            store: trust::Store::default(),
         };
         // Creating an interface needs root: what is checked here is the
         // bookkeeping around it, by making the second attempt fail before.

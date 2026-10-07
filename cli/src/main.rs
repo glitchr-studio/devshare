@@ -8,14 +8,19 @@ use std::{
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use devshare_core::{
+    ca::DeviceCa,
     discover,
     environment::{self, Config, Settings},
-    guest::{self, GuestLink, Tunnel},
+    guest::{self, GuestLink, Termination, Tunnel},
     host::{Activity, Share, ShareOptions},
     invite::DeviceSecret,
     link::Route,
     probe::Probe,
-    protocol::{clean, code, Service},
+    protocol::{
+        clean, code,
+        helper::{records, TRUSTED_CAS},
+        Manifest, Service,
+    },
     qr,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -98,6 +103,25 @@ enum Command {
         #[arg(long, env = "DEVSHARE_CONFIG")]
         config: Option<PathBuf>,
     },
+    /// This device's own certificate authority: with it, https:// to the
+    /// services of a session opens without a warning, in every program.
+    Ca {
+        #[command(subcommand)]
+        action: Option<CaAction>,
+    },
+}
+
+#[derive(Subcommand)]
+enum CaAction {
+    /// Show it and whether this computer trusts it. What `devshare ca` does.
+    Status,
+    /// Make it if there is none, and have this computer trust it (through
+    /// DevShare's helper).
+    Install,
+    /// Replace it with a new one, trusted in its place.
+    Renew,
+    /// Stop trusting it and delete it.
+    Remove,
 }
 
 #[tokio::main]
@@ -123,7 +147,10 @@ async fn main() {
     #[cfg(unix)]
     if matches!(
         cli.command,
-        Command::Discover { .. } | Command::Settings { .. } | Command::Environments { .. }
+        Command::Discover { .. }
+            | Command::Settings { .. }
+            | Command::Environments { .. }
+            | Command::Ca { .. }
     ) {
         // SAFETY: called once, before any thread or output exists.
         unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
@@ -149,6 +176,7 @@ async fn main() {
             trust_names,
         } => join(cli.server, &invitation, trust_names).await,
         Command::Environments { config } => list(config),
+        Command::Ca { action } => ca(action.unwrap_or(CaAction::Status)),
     };
     if let Err(error) = outcome {
         eprintln!("devshare: {error:#}");
@@ -431,6 +459,7 @@ async fn join(server: Option<String>, invitation: &str, trust_names: bool) -> Re
     devshare_core::link::use_relay(settings.relay.clone());
     let server = server.or_else(|| qr::server_of(invitation));
     let server = environment::server(server, None, &settings);
+    Tunnel::check_rights()?;
     // This device's lasting identity: a host that disconnects it keeps it out.
     let secret = DeviceSecret::load().unwrap_or_else(|error| {
         tracing::warn!("no device secret ({error:#}): joining without a lasting identity");
@@ -442,7 +471,22 @@ async fn join(server: Option<String>, invitation: &str, trust_names: bool) -> Re
         domains: vec![settings.domain()],
         trust_all: trust_names,
     };
-    let tunnel = match Tunnel::start(link.opener(), &link.manifest, &names).await {
+    let termination = termination(&settings, &link.manifest);
+    let certified = |service: &Service| {
+        service.tls.is_some()
+            && termination
+                .as_ref()
+                .is_some_and(|tls| tls.covers(&service.host))
+    };
+    let certified: Vec<Service> = link
+        .manifest
+        .environments
+        .values()
+        .flat_map(|environment| &environment.services)
+        .filter(|service| certified(service))
+        .cloned()
+        .collect();
+    let tunnel = match Tunnel::start(link.opener(), &link.manifest, &names, termination).await {
         Ok(tunnel) => tunnel,
         Err(error) => {
             link.close().await;
@@ -457,7 +501,11 @@ async fn join(server: Option<String>, invitation: &str, trust_names: bool) -> Re
             None => println!("  {}", clean(name, 64)),
         }
         for service in &environment.services {
-            println!("    {}", describe(service));
+            if certified.contains(service) {
+                println!("    {}  certified by this device", describe(service));
+            } else {
+                println!("    {}", describe(service));
+            }
         }
     }
     println!(
@@ -496,6 +544,126 @@ async fn join(server: Option<String>, invitation: &str, trust_names: bool) -> Re
 
     drop(tunnel);
     link.close().await;
+    Ok(())
+}
+
+/// TLS terminated on this device, when it has its own certificate authority
+/// and this computer trusts it: programs then accept the services' names
+/// without a warning. Otherwise connections pass through untouched.
+fn termination(settings: &Settings, manifest: &Manifest) -> Option<Termination> {
+    let ca = match DeviceCa::load(&[settings.domain()]) {
+        Ok(Some(ca)) => ca,
+        Ok(None) => return None,
+        Err(error) => {
+            tracing::warn!("{error:#}");
+            return None;
+        }
+    };
+    if !trusted(&ca) {
+        return None;
+    }
+    let until = std::time::SystemTime::now() + Duration::from_secs(manifest.session.expires_in);
+    match ca.minter(&manifest.hostnames(), until) {
+        Ok(minter) => Some(Termination::new(minter)),
+        Err(error) => {
+            tracing::warn!("no certificates for this session: {error:#}");
+            None
+        }
+    }
+}
+
+/// Whether the helper recorded that this computer trusts `ca`.
+fn trusted(ca: &DeviceCa) -> bool {
+    std::fs::read_to_string(TRUSTED_CAS).is_ok_and(|record| records(&record, ca.sha256()))
+}
+
+fn ca(action: CaAction) -> Result<()> {
+    let settings = Settings::load()?;
+    let domains = [settings.domain()];
+    let helper = || {
+        guest::Helper::connect()?.context(
+            "trusting a certificate authority goes through DevShare's helper, which is not \
+             installed: sudo devshare-helper install",
+        )
+    };
+    match action {
+        CaAction::Status => {
+            let Some(ca) = DeviceCa::load(&domains)? else {
+                println!("This device has no certificate authority of its own.");
+                println!(
+                    "devshare ca install makes one and has this computer trust it: https:// to \
+                     the services of the sessions you join then opens without a warning."
+                );
+                return Ok(());
+            };
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs() as i64;
+            println!("{}", clean(ca.common_name(), 120));
+            println!("  SHA-256   {}", ca.sha256());
+            println!("  for       {}", ca.domains().join(", "));
+            println!("  expires   in {} days", (ca.not_after() - now) / 86_400);
+            println!("  file      {}", DeviceCa::certificate_path()?.display());
+            if trusted(&ca) {
+                println!(
+                    "  trusted   yes: sessions' https:// services are certified by this device"
+                );
+            } else {
+                println!("  trusted   no: devshare ca install has this computer trust it");
+            }
+        }
+        CaAction::Install => {
+            let mut helper = helper()?;
+            let ca = match DeviceCa::load(&domains)? {
+                Some(ca) => ca,
+                None => DeviceCa::create(&domains)?,
+            };
+            helper.trust_ca(ca.certificate_pem())?;
+            println!(
+                "This computer trusts {} for {}.",
+                clean(ca.common_name(), 120),
+                ca.domains().join(", ")
+            );
+            println!(
+                "In the sessions you join, https:// to their services opens without a warning; \
+                 only this device trusts it, and only for those names."
+            );
+            if cfg!(target_os = "linux") {
+                println!(
+                    "Firefox keeps a list of its own: import {} in its certificate settings to \
+                     use it there.",
+                    DeviceCa::certificate_path()?.display()
+                );
+            }
+        }
+        CaAction::Renew => {
+            let mut helper = helper()?;
+            let old = DeviceCa::load(&domains)?;
+            let new = DeviceCa::generate(&domains)?;
+            // Trusted before it is kept, the old one untrusted last: a step
+            // that fails leaves a working authority behind.
+            helper.trust_ca(new.certificate_pem())?;
+            new.save()?;
+            if let Some(old) = old.filter(trusted) {
+                helper.untrust_ca(old.sha256())?;
+            }
+            println!(
+                "Renewed: this computer trusts {} in place of the earlier one.",
+                clean(new.common_name(), 120)
+            );
+        }
+        CaAction::Remove => {
+            let Some(ca) = DeviceCa::load(&domains)? else {
+                println!("This device has no certificate authority of its own.");
+                return Ok(());
+            };
+            if trusted(&ca) {
+                helper()?.untrust_ca(ca.sha256())?;
+            }
+            DeviceCa::delete()?;
+            println!("Removed: this computer no longer trusts it, and its key is deleted.");
+        }
+    }
     Ok(())
 }
 

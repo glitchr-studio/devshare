@@ -11,8 +11,9 @@ name = "devshare-helper"
 path = "src/main.rs"
 
 [dependencies]
-devshare-protocol.workspace = true
+devshare-protocol = { workspace = true, features = ["certificates"] }
 anyhow.workspace = true
+base64 = "0.22"
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

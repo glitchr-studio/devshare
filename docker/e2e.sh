@@ -96,6 +96,7 @@ if [[ $mode == helper ]]; then
     until_true 10 guest grep -q 'listening on' /tmp/helper.log
     expect "runs as root, listening for guests" "listening on /run/devshare/helper.sock" guest cat /tmp/helper.log
     expect "another user is not served" "does not accept this user" guest su -s /bin/sh nobody -c "env $(environment) devshare join '$code' 2>&1 || true"
+    refuse "and never reaches the host" host grep -q "joined: nobody" /shared/share.log
 fi
 
 echo
@@ -124,6 +125,20 @@ if [[ $mode == helper ]]; then
     expect "the helper says so" "session down" guest cat /tmp/helper.log
 fi
 
+# as_guest command   the command as the guest's ordinary user, in helper mode
+as_guest() { guest su -s /bin/sh guest -c "env $(environment) $1"; }
+
+if [[ $mode == helper ]]; then
+    echo
+    echo "The device's own certificate authority"
+    expect "none at first" "no certificate authority of its own" as_guest "devshare ca"
+    expect "made and trusted through the helper, by the ordinary user" "This computer trusts DevShare" as_guest "devshare ca install"
+    expect "for the dev domains only" "for       test, localhost, example, invalid, internal, home.arpa" as_guest "devshare ca"
+    expect "the system's store holds it" "DevShare" guest sh -c 'openssl x509 -noout -subject -in /usr/local/share/ca-certificates/devshare-*.crt'
+    expect "its key stays the user's, readable by the user only" "-rw------- guest" guest sh -c "ls -l /home/guest/.local/share/devshare/ca.key | tr -s ' ' | cut -d' ' -f1,3"
+    expect "the helper recorded it for that user" "$(guest id -u guest)" guest cat /etc/devshare/trusted-cas
+fi
+
 echo
 echo "Joining with the QR code"
 # A camera on the host's screen: all the guest gets is what the code says.
@@ -136,8 +151,10 @@ join "$scanned" alone || { guest cat /tmp/join.log; echo "the guest could not jo
 expect "the guest lists what is shared" "api.shop.test:8080" guest cat /tmp/join.log
 until_true 10 guest grep -q '^Route:' /tmp/join.log
 expect "the link is $route" "Route: $route" guest cat /tmp/join.log
-until_true 10 host grep -q 'guest 2: ' /shared/share.log
-expect "the host says so too" "guest 2: $route" host cat /shared/share.log
+# The latest guest's route, whatever its number.
+route_line() { host sh -c "grep -E '^  guest [0-9]+: (direct|relayed)' /shared/share.log | tail -1"; }
+until_true 10 host grep -qE '^  guest [0-9]+: (direct|relayed)' /shared/share.log
+expect "the host says so too" ": $route" route_line
 refuse "the unshared environment is not listed" guest grep -q grafana /tmp/join.log
 expect "one block of names, the stale one replaced" "1" guest grep -c '>>> devshare' /etc/hosts
 expect "the interface is up" "198.18.90.1" guest ip -o -4 addr
@@ -154,9 +171,20 @@ expect "http://shop.test" "service=shop host=shop.test path=/cart" guest curl -f
 expect "http://admin.test, same port, another service" "service=admin host=admin.test" guest curl -fsS -m 10 http://admin.test/
 expect "http://api.shop.test:8080" "service=api host=api.shop.test:8080" guest curl -fsS -m 10 http://api.shop.test:8080/
 expect "http://shop.test:5173" "service=vite host=shop.test:5173" guest curl -fsS -m 10 http://shop.test:5173/
-expect "https://shop.test, verified end to end" "service=shop-tls host=shop.test" guest curl -fsS -m 10 --cacert /shared/shop.pem https://shop.test/
 pin=$(guest sh -c "openssl x509 -in /shared/shop.pem -outform der | sha256sum | cut -c1-16")
 expect "the manifest carries that certificate's fingerprint" "shop.test:443  TLS $pin" guest cat /tmp/join.log
+if [[ $mode == helper ]]; then
+    # Nothing of the host's is trusted: the device certifies the name itself,
+    # and reaches the service only if it shows the certificate the host saw.
+    expect "https://shop.test with no certificate given, as a browser would" "service=shop-tls host=shop.test" guest curl -fsS -m 10 https://shop.test/
+    expect "the guest says the device certifies it" "shop.test:443  TLS $pin…  certified by this device" guest cat /tmp/join.log
+    served() { guest sh -c "openssl s_client -connect shop.test:443 -servername shop.test </dev/null 2>/dev/null | openssl x509 -noout $1"; }
+    expect "the certificate is the device's" "O = \"DevShare, this device only\"" served -issuer
+    expect "for that name alone" "DNS:shop.test" served "-ext subjectAltName | tail -1 | tr -d ' ' | grep -x DNS:shop.test"
+    expect "the protocol the client gets is the one the service chose" "ALPN protocol: http/1.1" guest sh -c 'openssl s_client -alpn h2,http/1.1 -connect shop.test:443 -servername shop.test </dev/null 2>/dev/null | grep ALPN'
+else
+    expect "https://shop.test, verified end to end" "service=shop-tls host=shop.test" guest curl -fsS -m 10 --cacert /shared/shop.pem https://shop.test/
+fi
 
 echo
 echo "How connections end"
@@ -202,6 +230,21 @@ expect "every connection opened was closed" "same" guest sh -c '
 peak=$(guest sh -c 'grep VmHWM /proc/$(pgrep -x devshare)/status' | tr -s '\t ' ' ' | cut -d' ' -f2)
 printf '  · peak memory of the guest process: %s MiB\n' "$((peak / 1024))"
 
+if [[ $mode == helper ]]; then
+    echo
+    echo "A service whose certificate changed"
+    # The developer restarts the services with another certificate while
+    # the session runs: the guest no longer reaches the one the host saw.
+    host sh -c 'openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
+        -keyout /tmp/other.key -out /tmp/other.pem -subj "/CN=shop.test" -addext "subjectAltName=DNS:shop.test" 2>/dev/null
+        pkill -f services.py'
+    compose exec -d host python3 /harness/services.py /tmp/other.pem /tmp/other.key
+    until_true 10 host curl -fsk https://shop.test/
+    refuse "the guest refuses it" guest curl -fsS -m 10 https://shop.test/
+    expect "and says why" "not the one the host saw" guest cat /tmp/join.log
+    expect "plain HTTP is unaffected" "service=shop host=shop.test" guest curl -fsS -m 10 http://shop.test/
+fi
+
 echo
 echo "A guest that is revoked"
 host sh -c 'echo guests >/shared/commands'
@@ -226,6 +269,15 @@ else
     rejoin=(sh -c "devshare join '$code' 2>&1 || true")
 fi
 expect "its device cannot come back, even with the code" "the host disconnected this device" guest "${rejoin[@]}"
+
+if [[ $mode == helper ]]; then
+    echo
+    echo "Removing the device's authority"
+    expect "the ordinary user removes it" "no longer trusts it" as_guest "devshare ca remove"
+    refuse "the system's store no longer holds it" guest sh -c 'ls /usr/local/share/ca-certificates/devshare-*.crt'
+    refuse "nor the helper's record" guest grep -q . /etc/devshare/trusted-cas
+    refuse "and its key is gone" guest test -e /home/guest/.local/share/devshare/ca.key
+fi
 
 echo
 echo "The end of the session"

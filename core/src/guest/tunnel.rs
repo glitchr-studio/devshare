@@ -16,7 +16,11 @@ use tokio::{io::AsyncWriteExt, task::JoinSet};
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 use tun::AbstractDevice;
 
-use super::{dns, AddressPlan, NamePolicy, OpenError, Opener};
+use super::{
+    dns,
+    tls::{self, Bridged},
+    AddressPlan, NamePolicy, OpenError, Opener, Termination,
+};
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 use super::{helper::Helper, system::SystemDns};
 use crate::link;
@@ -52,10 +56,20 @@ pub struct Tunnel {
 impl Tunnel {
     /// Desktop: creates the interface and points the system's resolver at it
     /// for the shared names. Needs the privilege to create an interface.
+    ///
+    /// With a `termination`, TLS connections to the names it covers are
+    /// terminated on this device (see [`Termination`]); without one, they
+    /// pass through and programs see the services' own certificates.
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
-    pub async fn start(opener: Opener, manifest: &Manifest, names: &NamePolicy) -> Result<Self> {
+    pub async fn start(
+        opener: Opener,
+        manifest: &Manifest,
+        names: &NamePolicy,
+        termination: Option<Termination>,
+    ) -> Result<Self> {
         refuse_unexpected_names(manifest, names)?;
         let plan = Arc::new(AddressPlan::new(manifest)?);
+        let termination = termination.map(Arc::new);
         let root = nix::unistd::geteuid().is_root();
 
         // Without administrator rights, the helper makes the interface and
@@ -67,7 +81,7 @@ impl Tunnel {
                 config.raw_fd(descriptor.into_raw_fd()).mtu(MTU);
                 let device = tun::create_as_async(&config)
                     .context("attaching to the interface the helper made")?;
-                let tasks = serve(device, opener, plan.clone())?;
+                let tasks = serve(device, opener, plan.clone(), termination)?;
                 return Ok(Self {
                     plan,
                     interface: Some(interface),
@@ -100,7 +114,7 @@ impl Tunnel {
         };
         let interface = device.tun_name().context("reading the interface name")?;
 
-        let tasks = serve(device, opener, plan.clone())?;
+        let tasks = serve(device, opener, plan.clone(), termination)?;
         let system = SystemDns::install(&interface, &plan)?;
 
         Ok(Self {
@@ -110,6 +124,20 @@ impl Tunnel {
             _system: Some(system),
             _helper: None,
         })
+    }
+
+    /// Whether this process will be able to make the interface: as root, or
+    /// through a helper that serves this user. Checked before joining, so
+    /// that a guest who cannot use a session never appears to its host nor
+    /// takes one of its places.
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    pub fn check_rights() -> Result<()> {
+        if nix::unistd::geteuid().is_root() || Helper::connect()?.is_some() {
+            return Ok(());
+        }
+        Err(super::helper::without_rights(anyhow::anyhow!(
+            "not running as root, and DevShare's helper is not installed"
+        )))
     }
 
     /// Mobile: the system creates the interface (a packet tunnel on iOS, a
@@ -124,6 +152,7 @@ impl Tunnel {
         manifest: &Manifest,
         names: &NamePolicy,
         descriptor: std::os::fd::RawFd,
+        termination: Option<Termination>,
     ) -> Result<Self> {
         refuse_unexpected_names(manifest, names)?;
         let plan = Arc::new(AddressPlan::new(manifest)?);
@@ -133,7 +162,7 @@ impl Tunnel {
         let device =
             tun::create_as_async(&config).context("attaching to the system's interface")?;
 
-        let tasks = serve(device, opener, plan.clone())?;
+        let tasks = serve(device, opener, plan.clone(), termination.map(Arc::new))?;
         Ok(Self {
             plan,
             interface: None,
@@ -178,7 +207,12 @@ fn refuse_unexpected_names(manifest: &Manifest, names: &NamePolicy) -> Result<()
 /// Runs a TCP/IP stack in this process on the packets of the interface:
 /// every connection a program of the device opens to an address of the
 /// session ends here, as a stream.
-fn serve(device: tun::AsyncDevice, opener: Opener, plan: Arc<AddressPlan>) -> Result<JoinSet<()>> {
+fn serve(
+    device: tun::AsyncDevice,
+    opener: Opener,
+    plan: Arc<AddressPlan>,
+    termination: Option<Arc<Termination>>,
+) -> Result<JoinSet<()>> {
     let (stack, runner, udp, tcp) = StackBuilder::default()
         .enable_tcp(true)
         .enable_udp(true)
@@ -224,12 +258,17 @@ fn serve(device: tun::AsyncDevice, opener: Opener, plan: Arc<AddressPlan>) -> Re
         }
     });
 
-    tasks.spawn(connections(tcp, opener, plan.clone()));
+    tasks.spawn(connections(tcp, opener, plan.clone(), termination));
     tasks.spawn(resolver(udp, plan));
     Ok(tasks)
 }
 
-async fn connections(mut listener: TcpListener, opener: Opener, plan: Arc<AddressPlan>) {
+async fn connections(
+    mut listener: TcpListener,
+    opener: Opener,
+    plan: Arc<AddressPlan>,
+    termination: Option<Arc<Termination>>,
+) {
     // Counted so that a connection which never ends shows in the log.
     let open = Arc::new(AtomicUsize::new(0));
     let said = Arc::new(Mutex::new(HashSet::new()));
@@ -249,25 +288,52 @@ async fn connections(mut listener: TcpListener, opener: Opener, plan: Arc<Addres
 
         let (opener, open, port) = (opener.clone(), open.clone(), destination.port());
         let said = said.clone();
+        // Terminated here when the service speaks TLS and this device's
+        // certificates cover its name.
+        let terminated = plan
+            .pin(&name, port)
+            .map(str::to_string)
+            .zip(termination.clone().filter(|tls| tls.covers(&name)));
         tokio::spawn(async move {
             let count = open.fetch_add(1, Ordering::Relaxed) + 1;
             tracing::debug!("{name}:{port} opened, {count} open");
-            match opener.open(&name, port).await {
-                Ok((send, recv)) => {
-                    link::pipe(stream, send, recv).await.ok();
+            // A browser can only show a closed connection: the reason is
+            // said here, once for each service.
+            let say_once = |reason: String| {
+                if said.lock().unwrap().insert((name.clone(), port)) {
+                    tracing::warn!("{name}:{port}: {reason}");
                 }
-                Err(error) => {
-                    match error {
-                        OpenError::Failed(error) => tracing::debug!("{name}:{port}: {error:#}"),
-                        // A browser can only show a closed connection: the
-                        // reason is said here, once for each service.
-                        error => {
-                            if said.lock().unwrap().insert((name.clone(), port)) {
-                                tracing::warn!("{name}:{port}: {error}");
-                            }
-                        }
+            };
+            if let Some((pin, termination)) = terminated {
+                let opened = async {
+                    let (send, recv) = opener.open(&name, port).await?;
+                    Ok::<_, OpenError>(tokio::io::join(recv, send))
+                };
+                match tls::bridge(stream, &name, &pin, &termination, opened).await {
+                    Ok(()) => {}
+                    Err(Bridged::Unreachable(OpenError::Failed(error))) => {
+                        tracing::debug!("{name}:{port}: {error:#}")
                     }
-                    refuse(stream).await;
+                    Err(Bridged::Unreachable(error)) => say_once(error.to_string()),
+                    Err(Bridged::Changed) => say_once(
+                        "refused: its certificate is not the one the host saw when it shared it"
+                            .to_string(),
+                    ),
+                    Err(Bridged::Failed(error)) => tracing::debug!("{name}:{port}: {error:#}"),
+                }
+            } else {
+                match opener.open(&name, port).await {
+                    Ok((send, recv)) => {
+                        link::pipe(stream, send, recv).await.ok();
+                    }
+                    Err(OpenError::Failed(error)) => {
+                        tracing::debug!("{name}:{port}: {error:#}");
+                        refuse(stream).await;
+                    }
+                    Err(error) => {
+                        say_once(error.to_string());
+                        refuse(stream).await;
+                    }
                 }
             }
             let count = open.fetch_sub(1, Ordering::Relaxed) - 1;

@@ -12,6 +12,7 @@ mod helper;
 mod link;
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 mod system;
+mod tls;
 mod tunnel;
 
 pub use addresses::AddressPlan;
@@ -19,6 +20,7 @@ pub use devshare_protocol::names::{is_hostname, NamePolicy, DEV_DOMAINS};
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub use helper::Helper;
 pub use link::{End, GuestLink, JoinError, OpenError, Opener};
+pub use tls::Termination;
 pub use tunnel::Tunnel;
 
 use devshare_protocol::Device;

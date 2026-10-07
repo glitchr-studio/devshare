@@ -95,6 +95,33 @@ at installation (`sudo devshare-helper install --user <name>` adds one). It
 refuses names outside the test domains unless root lists a domain in
 `/etc/devshare/trusted-domains`. `sudo devshare-helper uninstall` removes it.
 
+## HTTPS without a warning
+
+A project's `https://shop.test` has a certificate no browser of the guest
+trusts. With the helper installed, a guest can make a certificate authority
+of their own device, once:
+
+```sh
+devshare ca install
+```
+
+From then on, in the sessions they join, the guest's device answers
+`https://shop.test` with a certificate it makes for that name and that
+session, and reaches the host's service with a client that accepts only the
+certificate the host saw when it shared it. Browsers and every other program
+open the page without a warning, and nothing of the host's is trusted. A
+service whose certificate changed during the session is refused.
+
+The authority is trusted on this device only, and can only vouch for
+development names: its certificate is constrained to `.test`, `.localhost`,
+`.example`, `.invalid`, `.internal`, `home.arpa` and the guest's own `domain`
+setting, and excludes every IP address. The helper refuses to install one
+that is not. Its key is a file readable by the user alone, in DevShare's data
+folder. `devshare ca` shows it, `devshare ca renew` replaces it, `devshare ca
+remove` removes it; uninstalling the helper removes every one it installed.
+Firefox on Linux keeps its own list of authorities and needs it imported by
+hand.
+
 ## Commands
 
 | Command | What it does |
@@ -103,6 +130,7 @@ refuses names outside the test domains unless root lists a domain in
 | `devshare join <invitation>` | Joins a session with its link, its QR code's text or its short code. |
 | `devshare discover [folder]` | Writes or refreshes the folder's `devshare.toml` from its compose file. |
 | `devshare settings` | Shows the general settings, common to all projects (`~/.config/devshare/devshare.toml`). |
+| `devshare ca` | This device's own certificate authority: `install`, `renew`, `remove`, see above. |
 | `devshare-helper` | `install`, `uninstall`, `run`: the part that needs root on a guest's computer, see above. |
 | `devshare-server` | A control plane to run on its own. Not needed for local use: `share` starts one when none is running. |
 

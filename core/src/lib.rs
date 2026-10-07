@@ -1,6 +1,7 @@
 //! The DevShare engine: everything the CLI, the desktop app and the mobile
 //! apps have in common.
 
+pub mod ca;
 pub mod control;
 pub mod direct;
 pub mod discover;
