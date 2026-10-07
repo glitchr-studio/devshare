@@ -112,6 +112,7 @@ fn the_shell_wins_over_the_env_file_and_a_hostname_can_be_chosen() {
             // Pinned to 0: Docker would pick the port.
             ("SHOWCASE_API".into(), "0".into()),
         ],
+        hosts: None,
     };
     let found = discover(&showcase(), &options).unwrap();
 
@@ -257,4 +258,287 @@ fn the_general_settings_choose_what_follows_the_projects_name() {
         found.entrypoint().as_deref(),
         Some("http://showcase.lan:8710")
     );
+}
+
+/// A project made of these files, in a folder of its own.
+fn files(name: &str, files: &[(&str, &str)]) -> PathBuf {
+    let folder = std::env::temp_dir().join(format!("devshare-{name}-{}", std::process::id()));
+    std::fs::remove_dir_all(&folder).ok();
+    for (path, content) in files {
+        let path = folder.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+    folder
+}
+
+/// `host:port` of each service of the configuration a discovery gives.
+fn shared(found: &devshare_core::discover::Discovery) -> Vec<String> {
+    let config = found.config();
+    let mut shared: Vec<String> = config
+        .environments
+        .values()
+        .flat_map(|environment| &environment.services)
+        .map(|service| format!("{}:{}", service.host, service.port))
+        .collect();
+    shared.sort();
+    shared
+}
+
+#[test]
+fn names_routed_by_traefik_labels_share_its_ports() {
+    let folder = files(
+        "traefik",
+        &[(
+            "compose.yaml",
+            r#"
+services:
+  proxy:
+    image: traefik:v3.1
+    ports: ["80:80", "443:443"]
+  app:
+    image: my/app
+    labels:
+      traefik.http.routers.app.rule: "Host(`shop.test`) || Host(`api.shop.test`)"
+      traefik.http.routers.app.entrypoints: websecure
+  admin:
+    image: my/admin
+    labels:
+      - "traefik.http.routers.admin.rule=Host(`admin.shop.test`) && PathPrefix(`/`)"
+  hidden:
+    image: my/hidden
+    labels:
+      traefik.enable: "false"
+      traefik.http.routers.hidden.rule: "Host(`hidden.shop.test`)"
+  vite:
+    image: node:22
+    ports: ["5173:5173"]
+"#,
+        )],
+    );
+    let found = discover(&folder, &Options::default()).unwrap();
+    assert_eq!(found.hostname, "shop.test", "the first routed name");
+    assert_eq!(
+        shared(&found),
+        [
+            "admin.shop.test:443",
+            "admin.shop.test:80",
+            "api.shop.test:443",
+            "api.shop.test:80",
+            "shop.test:443",
+            "shop.test:5173",
+            "shop.test:80",
+        ]
+    );
+    assert_eq!(found.entrypoint().as_deref(), Some("https://shop.test"));
+    assert_eq!(found.routes[0].source, "the labels of app");
+
+    // Written, then read back as a session reads it.
+    let path = write(&folder, &found, false).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        text.contains("#   api.shop.test  from the labels of app"),
+        "{text}"
+    );
+    let config = Config::of(&folder).unwrap();
+    assert_eq!(
+        config.environments.values().next().unwrap().services.len(),
+        7
+    );
+    std::fs::remove_dir_all(&folder).ok();
+}
+
+#[test]
+fn names_of_a_mounted_nginx_configuration_and_what_guests_would_refuse() {
+    let folder = files(
+        "nginx",
+        &[
+            (
+                "docker-compose.yml",
+                "services:\n  web:\n    image: nginx:1.27\n    ports: [\"8443:443\"]\n    volumes:\n      - ./docker/nginx:/etc/nginx/conf.d:ro\n      - static:/srv\n  php:\n    image: php:8.3-fpm\nvolumes:\n  static:\n",
+            ),
+            (
+                "docker/nginx/default.conf",
+                "server {\n  listen 443 ssl;\n  server_name shop.test admin.shop.test shop.com localhost;\n}\n",
+            ),
+            ("docker/nginx/README.md", "server_name ignored.test;"),
+        ],
+    );
+    let found = discover(&folder, &Options::default()).unwrap();
+    assert_eq!(shared(&found), ["admin.shop.test:8443", "shop.test:8443"]);
+    assert_eq!(found.routes[0].source, "docker/nginx/default.conf");
+    assert!(
+        found
+            .notes
+            .iter()
+            .any(|note| note.contains("would refuse them: shop.com.")),
+        "{:?}",
+        found.notes
+    );
+    assert_eq!(
+        found.entrypoint().as_deref(),
+        Some("https://shop.test:8443")
+    );
+    std::fs::remove_dir_all(&folder).ok();
+}
+
+#[test]
+fn a_caddy_built_from_the_project_and_a_traefik_of_the_machine() {
+    let folder = files(
+        "caddy",
+        &[
+            (
+                "compose.yaml",
+                "services:\n  caddy:\n    build: ./docker/caddy\n    ports: [\"8080:80\"]\n",
+            ),
+            (
+                "docker/caddy/Caddyfile",
+                "{\n  auto_https off\n}\nhttp://shop.test, http://www.shop.test {\n  reverse_proxy app:8000\n}\n",
+            ),
+        ],
+    );
+    let found = discover(&folder, &Options::default()).unwrap();
+    assert_eq!(shared(&found), ["shop.test:8080", "www.shop.test:8080"]);
+    std::fs::remove_dir_all(&folder).ok();
+
+    // Labels for a Traefik the project does not run: the machine's own,
+    // on the usual ports.
+    let folder = files(
+        "outside",
+        &[(
+            "compose.yaml",
+            "services:\n  app:\n    image: my/app\n    labels: [\"traefik.http.routers.app.rule=Host(`shop.test`)\"]\n",
+        )],
+    );
+    let found = discover(&folder, &Options::default()).unwrap();
+    assert_eq!(shared(&found), ["shop.test:443", "shop.test:80"]);
+    assert!(found
+        .notes
+        .iter()
+        .any(|note| note.contains("not part of this project")));
+    std::fs::remove_dir_all(&folder).ok();
+}
+
+#[test]
+fn subdomains_in_the_hosts_file_follow_their_parent_and_a_chosen_name_is_kept() {
+    let folder = files(
+        "hosts",
+        &[
+            (
+                "compose.yaml",
+                "services:\n  web:\n    image: nginx\n    ports: [\"80:80\"]\n    volumes: [\"./site.conf:/etc/nginx/conf.d/site.conf\"]\n  api:\n    image: my/api\n    ports: [\"8080:8080\"]\n",
+            ),
+            ("site.conf", "server { server_name shop.test; }"),
+            (
+                "hosts",
+                "127.0.0.1 localhost cdn.shop.test other.test\n10.0.0.2 lan.shop.test\n",
+            ),
+        ],
+    );
+    let options = Options {
+        hosts: Some(folder.join("hosts")),
+        ..Options::default()
+    };
+    let found = discover(&folder, &options).unwrap();
+    assert_eq!(
+        shared(&found),
+        ["cdn.shop.test:80", "shop.test:80", "shop.test:8080"]
+    );
+    assert!(found
+        .routes
+        .iter()
+        .any(|route| route.source == "/etc/hosts"));
+
+    // A hostname chosen by the developer is the project's own: the proxy
+    // still answers its names on its port.
+    let options = Options {
+        hostname: Some("mine.test".into()),
+        ..Options::default()
+    };
+    let found = discover(&folder, &options).unwrap();
+    assert_eq!(shared(&found), ["mine.test:8080", "shop.test:80"]);
+    std::fs::remove_dir_all(&folder).ok();
+}
+
+#[test]
+fn a_vite_project_without_docker_and_what_vite_needs_to_be_told() {
+    let folder = files(
+        "vite",
+        &[
+            (
+                "vite.config.ts",
+                "export default defineConfig({ server: { port: 3000, strictPort: true } })\n",
+            ),
+            ("package.json", r#"{"scripts": {"dev": "vite"}}"#),
+        ],
+    );
+    let found = discover(&folder, &Options::default()).unwrap();
+    let name = found.hostname.clone();
+    assert_eq!(shared(&found), [format!("{name}:3000")]);
+    assert_eq!(found.sources, ["vite.config.ts"]);
+    let config = found.config();
+    let service = &config.environments.values().next().unwrap().services[0];
+    assert_eq!(service.target.as_deref(), Some("localhost:3000"));
+    assert!(
+        found.notes.iter().any(|note| note.contains("allowedHosts")),
+        "{:?}",
+        found.notes
+    );
+    assert!(!found.notes.iter().any(|note| note.contains("strictPort")));
+
+    // Told about the name: nothing to say.
+    std::fs::write(
+        folder.join("vite.config.ts"),
+        format!("export default {{ server: {{ strictPort: true, allowedHosts: ['{name}'] }} }}\n"),
+    )
+    .unwrap();
+    let found = discover(&folder, &Options::default()).unwrap();
+    assert_eq!(shared(&found), [format!("{name}:5173")]);
+    assert!(found.notes.is_empty(), "{:?}", found.notes);
+    std::fs::remove_dir_all(&folder).ok();
+}
+
+#[test]
+fn a_symfony_project_served_by_the_symfony_cli() {
+    let folder = files(
+        "symfony",
+        &[
+            ("symfony.lock", "{}"),
+            (".symfony.local.yaml", "http:\n  port: 8010\n"),
+        ],
+    );
+    let found = discover(&folder, &Options::default()).unwrap();
+    assert_eq!(shared(&found), [format!("{}:8010", found.hostname)]);
+    assert_eq!(found.entrypoint(), None, "8010 is no usual web port");
+    std::fs::remove_dir_all(&folder).ok();
+}
+
+#[test]
+fn vite_on_the_machine_next_to_containers_and_not_twice() {
+    let folder = files(
+        "beside",
+        &[
+            (
+                "compose.yaml",
+                "services:\n  web:\n    image: nginx\n    ports: [\"8080:80\"]\n",
+            ),
+            ("vite.config.js", "export default {}\n"),
+        ],
+    );
+    let found = discover(&folder, &Options::default()).unwrap();
+    let name = found.hostname.clone();
+    assert_eq!(
+        shared(&found),
+        [format!("{name}:5173"), format!("{name}:8080")]
+    );
+
+    // Vite in a container: its port is the container's, not added again.
+    std::fs::write(
+        folder.join("compose.yaml"),
+        "services:\n  node:\n    image: node:22\n    ports: [\"5174:5173\"]\n",
+    )
+    .unwrap();
+    let found = discover(&folder, &Options::default()).unwrap();
+    assert_eq!(shared(&found), [format!("{name}:5174")]);
+    std::fs::remove_dir_all(&folder).ok();
 }

@@ -116,6 +116,7 @@ fn add_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<String, St
         hostname: None,
         domain: Settings::load().ok().map(|settings| settings.domain()),
         environment: std::env::vars().collect(),
+        hosts: Some("/etc/hosts".into()),
     };
     let name = match discover::discover(&folder, &options) {
         Ok(found) => {

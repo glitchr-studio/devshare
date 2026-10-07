@@ -9,6 +9,12 @@
 //! override, `COMPOSE_FILE`, `.env` (then `.env.local`), `${VAR}` with its
 //! defaults, the short and long forms of `ports`, port ranges, profiles.
 //! Not understood: `extends`, `include`.
+//!
+//! A project behind a reverse proxy answers several names on the same
+//! ports: they are read from the proxy's configuration (see [`routes`]),
+//! and subdomains of them from `/etc/hosts`. A project with no compose file
+//! may still run servers on the machine: Vite's, the Symfony CLI's (see
+//! [`local`]).
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -19,6 +25,9 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_yaml_ng::Value;
 
 use crate::environment::{Config, EnvironmentDef, ServiceDef, DEFAULT_DOMAIN};
+
+mod local;
+mod routes;
 
 /// First line of a file this module wrote, and may therefore write again.
 const SIGNATURE: &str = "# Written by `devshare discover`";
@@ -85,6 +94,9 @@ pub struct Options {
     /// Variables of the calling shell: they win over the env files, as they
     /// do for Compose.
     pub environment: Vec<(String, String)>,
+    /// A hosts file to read subdomains of the project's names from:
+    /// `/etc/hosts` for a developer's machine, nothing in tests.
+    pub hosts: Option<PathBuf>,
 }
 
 /// One port a service publishes.
@@ -120,11 +132,25 @@ impl Published {
     }
 }
 
+/// A hostname a reverse proxy of the project answers, and where it was read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Route {
+    pub name: String,
+    /// The service whose ports carry it. `None`: wherever the project's
+    /// own hostname is shared.
+    pub service: Option<String>,
+    /// Where it was read: a file of the project, a service's labels.
+    pub source: String,
+}
+
 /// What a directory's compose file publishes.
 #[derive(Debug, Clone)]
 pub struct Discovery {
     pub project: String,
+    /// The project's own hostname: for the ports no proxy routes names on.
     pub hostname: String,
+    /// The names the project's proxies route, on their own ports.
+    pub routes: Vec<Route>,
     /// The files that were read, by name.
     pub sources: Vec<String>,
     pub ports: Vec<Published>,
@@ -139,6 +165,30 @@ impl Discovery {
 
     pub fn left_out(&self) -> impl Iterator<Item = &Published> {
         self.ports.iter().filter(|port| port.left_out.is_some())
+    }
+
+    /// The hostnames a guest reaches `port` under: those its proxy routes,
+    /// else the project's own and the names that go with it.
+    pub fn names_for(&self, port: &Published) -> Vec<String> {
+        let routed = |service: Option<&str>| -> Vec<String> {
+            self.routes
+                .iter()
+                .filter(|route| route.service.as_deref() == service)
+                .map(|route| route.name.clone())
+                .collect()
+        };
+        let mut names = routed(Some(&port.service));
+        if names.is_empty() {
+            names.push(self.hostname.clone());
+            names.extend(routed(None));
+        }
+        let mut seen = Vec::new();
+        names.retain(|name| {
+            let new = !seen.contains(name);
+            seen.push(name.clone());
+            new
+        });
+        names
     }
 
     /// The address guests start from: the web port, when there is one.
@@ -156,9 +206,10 @@ impl Discovery {
                 by_container(&[80, 8080, 8000, 3000, 5173, 4200])?,
             ),
         };
+        let name = self.names_for(found).swap_remove(0);
         Some(match found.host? {
-            port if port == default => format!("{scheme}://{}", self.hostname),
-            port => format!("{scheme}://{}:{port}", self.hostname),
+            port if port == default => format!("{scheme}://{name}"),
+            port => format!("{scheme}://{name}:{port}"),
         })
     }
 
@@ -166,10 +217,11 @@ impl Discovery {
     pub fn config(&self) -> Config {
         let services = self
             .shared()
-            .filter_map(|port| {
-                Some(ServiceDef {
-                    host: self.hostname.clone(),
-                    port: port.host?,
+            .filter(|port| port.host.is_some())
+            .flat_map(|port| {
+                self.names_for(port).into_iter().map(|host| ServiceDef {
+                    host,
+                    port: port.host.unwrap_or_default(),
                     target: port.target(),
                 })
             })
@@ -199,6 +251,13 @@ impl Discovery {
             file.push_str(&format!("server = {}\n\n", quoted(server)));
         }
 
+        if !self.routes.is_empty() {
+            file.push_str("# Names the project's proxies answer:\n");
+            for route in &self.routes {
+                file.push_str(&format!("#   {}  from {}\n", route.name, route.source));
+            }
+            file.push('\n');
+        }
         file.push_str(&format!("[environments.{}]\n", key(&self.project)));
         if let Some(entrypoint) = self.entrypoint() {
             file.push_str(&format!("entrypoint = {}\n", quoted(&entrypoint)));
@@ -206,23 +265,34 @@ impl Discovery {
         file.push_str("services = [\n");
         for port in &self.ports {
             // A UDP port gets no line to uncomment: a session carries TCP.
-            let line = port
+            let lines = port
                 .host
                 .zip(port.target())
                 .filter(|_| !port.udp)
                 .map(|(host, target)| {
-                    format!(
-                        "{{ host = {}, port = {host}, target = {} }},",
-                        quoted(&self.hostname),
-                        quoted(&target)
-                    )
+                    self.names_for(port)
+                        .iter()
+                        .map(|name| {
+                            format!(
+                                "{{ host = {}, port = {host}, target = {} }},",
+                                quoted(name),
+                                quoted(&target)
+                            )
+                        })
+                        .collect::<Vec<_>>()
                 });
-            match (&port.left_out, line) {
-                (None, Some(line)) => {
-                    file.push_str(&format!("  # {}\n  {line}\n", port.label()));
+            match (&port.left_out, lines) {
+                (None, Some(lines)) => {
+                    file.push_str(&format!("  # {}\n", port.label()));
+                    for line in lines {
+                        file.push_str(&format!("  {line}\n"));
+                    }
                 }
-                (Some(reason), Some(line)) => {
-                    file.push_str(&format!("  # {}: {reason}\n  # {line}\n", port.label()));
+                (Some(reason), Some(lines)) => {
+                    file.push_str(&format!("  # {}: {reason}\n", port.label()));
+                    for line in lines {
+                        file.push_str(&format!("  # {line}\n"));
+                    }
                 }
                 (reason, None) => {
                     let reason = reason.as_deref().unwrap_or("no port on the host");
@@ -251,6 +321,14 @@ pub fn discover(directory: &Path, options: &Options) -> Result<Discovery> {
         }
     }
     variables.extend(options.environment.iter().cloned());
+
+    let composed = variables
+        .get("COMPOSE_FILE")
+        .is_some_and(|files| !files.is_empty())
+        || has_compose_file(directory);
+    if !composed {
+        return on_the_machine(directory, options, &variables, sources);
+    }
 
     let files = compose_files(directory, &variables)?;
     let mut documents = Vec::new();
@@ -308,6 +386,7 @@ pub fn discover(directory: &Path, options: &Options) -> Result<Discovery> {
     let mut discovery = Discovery {
         project,
         hostname,
+        routes: Vec::new(),
         sources,
         ports: Vec::new(),
         notes: Vec::new(),
@@ -348,7 +427,228 @@ pub fn discover(directory: &Path, options: &Options) -> Result<Discovery> {
             }
         }
     }
+    find_routes(directory, &services, options, &mut discovery);
+
+    // Vite often runs on the machine next to the containers: its port is
+    // then published by none of them.
+    if let Some(vite) = local::vite(directory, &discovery.hostname) {
+        let port = vite.port.container;
+        let published = discovery
+            .ports
+            .iter()
+            .any(|known| known.container == port || known.host == Some(port));
+        if !published {
+            discovery.sources.push(vite.source);
+            discovery.ports.push(vite.port);
+            discovery.notes.extend(vite.notes);
+        }
+    }
     Ok(discovery)
+}
+
+/// A project without a compose file: the servers it runs on the machine.
+fn on_the_machine(
+    directory: &Path,
+    options: &Options,
+    variables: &HashMap<String, String>,
+    mut sources: Vec<String>,
+) -> Result<Discovery> {
+    let project = project_name(directory, &[], variables)?;
+    let hostname = match &options.hostname {
+        Some(hostname) => hostname.trim().to_ascii_lowercase(),
+        None => format!(
+            "{}.{}",
+            label(&project),
+            options.domain.as_deref().unwrap_or(DEFAULT_DOMAIN)
+        ),
+    };
+    let found: Vec<local::Local> = [local::symfony(directory), local::vite(directory, &hostname)]
+        .into_iter()
+        .flatten()
+        .collect();
+    if found.is_empty() {
+        bail!(
+            "no compose file in {}, nor a Vite or Symfony project",
+            directory.display()
+        );
+    }
+    let mut discovery = Discovery {
+        project,
+        hostname,
+        routes: Vec::new(),
+        sources: Vec::new(),
+        ports: Vec::new(),
+        notes: Vec::new(),
+    };
+    for local in found {
+        sources.insert(0, local.source);
+        discovery.ports.push(local.port);
+        discovery.notes.extend(local.notes);
+    }
+    discovery.sources = sources;
+    Ok(discovery)
+}
+
+/// The names the project's proxies answer, on the ports of the proxy that
+/// answers them. The first becomes the project's hostname unless one was
+/// chosen.
+fn find_routes(
+    directory: &Path,
+    services: &[(String, Service)],
+    options: &Options,
+    discovery: &mut Discovery,
+) {
+    use routes::Proxy;
+
+    let proxy_of = |name: &str, service: &Service| {
+        Proxy::of(name, service.image.as_deref(), service.build.as_deref())
+    };
+    // The service that carries what a proxy's labels route: the proxy
+    // itself when the project runs it.
+    let carrier = |wanted: Proxy| {
+        services
+            .iter()
+            .find(|(name, service)| proxy_of(name, service) == Some(wanted))
+            .map(|(name, _)| name.clone())
+    };
+
+    let mut found: Vec<(String, Option<String>, String)> = Vec::new();
+    let mut outside = Vec::new();
+    for (name, service) in services {
+        let disabled = service
+            .labels
+            .iter()
+            .any(|(key, value)| key == "traefik.enable" && value.eq_ignore_ascii_case("false"));
+        for (key, value) in &service.labels {
+            let Some((proxy, hosts)) = routes::label_hosts(key, value) else {
+                continue;
+            };
+            if proxy == Proxy::Traefik && disabled {
+                continue;
+            }
+            let by = carrier(proxy).unwrap_or_else(|| {
+                let label = match proxy {
+                    Proxy::Traefik => "traefik",
+                    _ => "caddy",
+                };
+                if !outside.contains(&label) {
+                    outside.push(label);
+                }
+                format!("{label} (outside this project)")
+            });
+            for host in hosts {
+                found.push((host, Some(by.clone()), format!("the labels of {name}")));
+            }
+        }
+        if let Some(proxy) = proxy_of(name, service) {
+            for file in
+                routes::config_files(directory, proxy, &service.mounted, service.build.as_deref())
+            {
+                let Ok(text) = std::fs::read_to_string(&file) else {
+                    continue;
+                };
+                let source = file
+                    .strip_prefix(directory)
+                    .unwrap_or(&file)
+                    .display()
+                    .to_string();
+                for host in proxy.names_in(&text) {
+                    found.push((host, Some(name.clone()), source.clone()));
+                }
+            }
+        }
+    }
+
+    // A proxy of the machine, not of the project: it listens on the usual
+    // ports, which the compose file therefore does not publish.
+    for label in outside {
+        let service = format!("{label} (outside this project)");
+        for port in [80, 443] {
+            if discovery.ports.iter().any(|known| known.host == Some(port)) {
+                continue;
+            }
+            discovery.ports.push(Published {
+                service: service.clone(),
+                container: port,
+                host: Some(port),
+                address: None,
+                udp: false,
+                left_out: None,
+            });
+        }
+        discovery.notes.push(format!(
+            "Names are routed by a {label} that is not part of this project: it is assumed \
+             on this machine's ports 80 and 443."
+        ));
+    }
+
+    // A guest refuses names outside the development domains, and this
+    // machine keeps `localhost` for itself.
+    let policy = devshare_protocol::names::NamePolicy::with(options.domain.clone());
+    let mut refused = Vec::new();
+    for (name, service, source) in found {
+        if name == "localhost" {
+            continue;
+        }
+        if !policy.accepts(&name) {
+            if !refused.contains(&name) {
+                refused.push(name);
+            }
+            continue;
+        }
+        let known = discovery
+            .routes
+            .iter()
+            .any(|route| route.name == name && route.service == service);
+        if !known {
+            discovery.routes.push(Route {
+                name,
+                service,
+                source,
+            });
+        }
+    }
+    if !refused.is_empty() {
+        discovery.notes.push(format!(
+            "Routed by the project but left out, as guests would refuse them: {}. Only names \
+             under .test, .localhost and the other development domains are shared.",
+            refused.join(", ")
+        ));
+    }
+    if options.hostname.is_none() {
+        if let Some(first) = discovery.routes.first() {
+            discovery.hostname = first.name.clone();
+        }
+    }
+
+    // Subdomains the developer gave this machine for the project's names.
+    let Some(text) = options
+        .hosts
+        .as_deref()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+    else {
+        return;
+    };
+    for name in routes::loopback_names(&text) {
+        if !policy.accepts(&name) || discovery.routes.iter().any(|route| route.name == name) {
+            continue;
+        }
+        let parent = discovery
+            .routes
+            .iter()
+            .find(|route| name.ends_with(&format!(".{}", route.name)))
+            .map(|route| route.service.clone());
+        let service = match parent {
+            Some(service) => service,
+            None if name.ends_with(&format!(".{}", discovery.hostname)) => None,
+            None => continue,
+        };
+        discovery.routes.push(Route {
+            name,
+            service,
+            source: "/etc/hosts".into(),
+        });
+    }
 }
 
 /// Writes the configuration of `directory`, replacing one this module wrote
@@ -404,6 +704,11 @@ struct Service {
     ports: Vec<Value>,
     profiles: Vec<String>,
     host_network: bool,
+    labels: Vec<(String, String)>,
+    /// The files and folders of the machine mounted into it.
+    mounted: Vec<String>,
+    /// Its build context, when it is built from the project.
+    build: Option<String>,
 }
 
 impl Service {
@@ -427,6 +732,65 @@ impl Service {
         if let Some(mode) = definition.get("network_mode").and_then(Value::as_str) {
             self.host_network = mode == "host";
         }
+        match definition.get("labels") {
+            Some(Value::Mapping(labels)) => {
+                for (key, value) in labels {
+                    if let (Some(key), Some(value)) = (key.as_str(), scalar(value)) {
+                        self.label(key, &value);
+                    }
+                }
+            }
+            Some(Value::Sequence(labels)) => {
+                for label in labels.iter().filter_map(Value::as_str) {
+                    let (key, value) = label.split_once('=').unwrap_or((label, ""));
+                    self.label(key, value);
+                }
+            }
+            _ => {}
+        }
+        if let Some(volumes) = definition.get("volumes").and_then(Value::as_sequence) {
+            for volume in volumes {
+                let source = match volume {
+                    Value::String(short) => short.split(':').next().map(str::to_string),
+                    long => long
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .filter(|kind| *kind == "bind")
+                        .and(long.get("source").and_then(Value::as_str))
+                        .map(str::to_string),
+                };
+                // A named volume is Docker's, not a path of the machine.
+                if let Some(source) = source.filter(|source| source.starts_with(['.', '/'])) {
+                    if !self.mounted.contains(&source) {
+                        self.mounted.push(source);
+                    }
+                }
+            }
+        }
+        match definition.get("build") {
+            Some(Value::String(context)) => self.build = Some(context.clone()),
+            Some(build) => {
+                if let Some(context) = build.get("context").and_then(Value::as_str) {
+                    self.build = Some(context.to_string());
+                }
+            }
+            None => {}
+        }
+    }
+
+    fn label(&mut self, key: &str, value: &str) {
+        let key = key.trim().to_string();
+        self.labels.retain(|(known, _)| *known != key);
+        self.labels.push((key, value.trim().to_string()));
+    }
+}
+
+fn scalar(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(number) => Some(number.to_string()),
+        Value::Bool(flag) => Some(flag.to_string()),
+        _ => None,
     }
 }
 

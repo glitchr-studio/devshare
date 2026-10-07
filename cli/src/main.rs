@@ -195,6 +195,7 @@ fn projects(folders: &[PathBuf], settings: &Settings) -> Result<Config> {
         hostname: None,
         domain: Some(settings.domain()),
         environment: std::env::vars().collect(),
+        hosts: Some("/etc/hosts".into()),
     };
     let mut together = Config::default();
     for folder in folders {
@@ -678,6 +679,7 @@ fn discover(
         hostname,
         domain: Some(Settings::load()?.domain()),
         environment: std::env::vars().collect(),
+        hosts: Some("/etc/hosts".into()),
     };
     let found = discover::discover(&directory, &options)?;
     if print {
@@ -686,9 +688,20 @@ fn discover(
     }
 
     println!("{} ({})\n", found.project, found.sources.join(", "));
-    println!("  Shared as {}", found.hostname);
+    println!("  Shared");
     for port in found.shared() {
-        println!("    {:<6} {}", port.host.unwrap_or_default(), port.label());
+        println!(
+            "    {:<6} {:<28} {}",
+            port.host.unwrap_or_default(),
+            port.label(),
+            found.names_for(port).join(", ")
+        );
+    }
+    if !found.routes.is_empty() {
+        println!("\n  Names read from the project's proxies");
+        for route in &found.routes {
+            println!("    {:<28} {}", route.name, route.source);
+        }
     }
     if found.left_out().next().is_some() {
         println!("\n  Left out");

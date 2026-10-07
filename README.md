@@ -45,7 +45,11 @@ GNU General Public License, version 3 or later: see [LICENSE](LICENSE).
 - **The host** reads which ports a project publishes from its Docker Compose
   file (`devshare discover`, or automatically on the first `devshare share`)
   and writes them to a `devshare.toml` in the project's folder. Databases,
-  caches, mail servers and shells are left out unless asked for.
+  caches, mail servers and shells are left out unless asked for. Behind a
+  reverse proxy, the names it answers come from its configuration: Traefik
+  labels, a Caddyfile, nginx's `server_name`, and their subdomains in
+  `/etc/hosts`. Without a compose file, a Vite dev server and the Symfony
+  CLI's server are found from their own configuration.
 - **The invitation** is one link, also shown as a QR code. It carries the
   host's identity for the session and the relay it is reachable through.
 - **The link** between host and guest is made by iroh: both sides connect
