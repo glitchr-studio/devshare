@@ -52,14 +52,14 @@ fn start(listen: &str) -> Server {
     panic!("it stopped without listening: {:?}", server.said);
 }
 
-/// What a port answers to `GET /v1`.
+/// What a port answers to `GET /v2`.
 fn identity(port: u16) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
     stream
-        .write_all(b"GET /v1 HTTP/1.0\r\nHost: localhost\r\n\r\n")
+        .write_all(b"GET /v2 HTTP/1.0\r\nHost: localhost\r\n\r\n")
         .unwrap();
     let mut answer = String::new();
     stream.read_to_string(&mut answer).unwrap();

@@ -12,6 +12,7 @@ use devshare_core::{
     environment::{self, Config, Settings},
     guest::{self, GuestLink, Tunnel},
     host::{Activity, Share, ShareOptions},
+    invite::DeviceSecret,
     link::Route,
     probe::Probe,
     protocol::{clean, code, Service},
@@ -405,7 +406,7 @@ async fn command(share: &Share, line: &str) {
         }
         ["revoke", guest] => match guest.parse() {
             Ok(guest) if share.revoke(guest).await => println!(
-                "Guest {guest} revoked. Its invitation is withdrawn: type \"invite\" for a new one."
+                "Guest {guest} revoked: disconnected, and its device cannot come back to this session."
             ),
             _ => println!("No guest {guest} is connected."),
         },
@@ -430,7 +431,12 @@ async fn join(server: Option<String>, invitation: &str, trust_names: bool) -> Re
     devshare_core::link::use_relay(settings.relay.clone());
     let server = server.or_else(|| qr::server_of(invitation));
     let server = environment::server(server, None, &settings);
-    let mut link = GuestLink::join(invitation, &server, guest::this_device()).await?;
+    // This device's lasting identity: a host that disconnects it keeps it out.
+    let secret = DeviceSecret::load().unwrap_or_else(|error| {
+        tracing::warn!("no device secret ({error:#}): joining without a lasting identity");
+        DeviceSecret::random()
+    });
+    let mut link = GuestLink::join_as(invitation, &server, guest::this_device(), &secret).await?;
 
     let names = guest::NamePolicy {
         domains: vec![settings.domain()],

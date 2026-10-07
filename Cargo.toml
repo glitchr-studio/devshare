@@ -23,3 +23,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [profile.release]
 strip = true
+
+# The invitation's lookup key is deliberately slow to compute (Argon2id,
+# about 150 ms optimized). Unoptimized it takes seconds: these two crates are
+# optimized in every build, or tests and debug runs would crawl.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3

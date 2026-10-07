@@ -196,11 +196,5 @@ async fn a_guest_joins_with_what_a_camera_reads_on_the_hosts_screen() {
     };
     assert!(GuestLink::join(&scanned, &server, after).await.is_err());
 
-    let page = get(&server, &format!("/{code}")).await;
-    assert!(
-        page.contains(" 404 ") && page.contains("no longer valid"),
-        "{page}"
-    );
-
     std::fs::remove_dir_all(&folder).ok();
 }

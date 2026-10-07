@@ -33,7 +33,7 @@ pub struct Snapshot {
     /// Whether the link and its QR code work from another network than
     /// this one.
     pub anywhere: bool,
-    /// False after someone was disconnected, until a new invitation.
+    /// False after too many wrong codes were tried, until a new invitation.
     pub invitation_open: bool,
     pub remaining: u64,
     pub max_guests: u32,
@@ -113,8 +113,8 @@ impl Session {
         Ok(Self { commands })
     }
 
-    /// Disconnects a guest. Its invitation is withdrawn with it, so it cannot
-    /// come back; [`Session::invite`] opens the session to others again.
+    /// Disconnects a guest. Its device cannot come back to the session; the
+    /// invitation stays open for everyone else.
     pub async fn disconnect(&self, guest: u32) -> bool {
         let (reply, answer) = oneshot::channel();
         self.commands

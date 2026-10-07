@@ -80,6 +80,11 @@ pub fn route(connection: &Connection) -> Option<(Route, Duration)> {
 
 /// Every session gets a fresh endpoint, hence a fresh key pair.
 pub async fn endpoint(accept: bool) -> Result<Endpoint> {
+    endpoint_as(accept, None).await
+}
+
+/// An endpoint with the given key, or a fresh one.
+pub async fn endpoint_as(accept: bool, key: Option<iroh::SecretKey>) -> Result<Endpoint> {
     let relay_mode = relay_mode()?;
     let wait_for_relay = !matches!(relay_mode, RelayMode::Disabled);
 
@@ -89,6 +94,9 @@ pub async fn endpoint(accept: bool) -> Result<Endpoint> {
     let mut builder = Endpoint::builder(presets::Minimal)
         .relay_mode(relay_mode)
         .transport_config(transport);
+    if let Some(key) = key {
+        builder = builder.secret_key(key);
+    }
     if accept {
         builder = builder.alpns(vec![ALPN.to_vec()]);
     }

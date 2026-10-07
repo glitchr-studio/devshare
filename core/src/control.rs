@@ -1,5 +1,5 @@
-//! Client of the control plane, which only maps an invitation code to the
-//! host's address for a limited time.
+//! Client of the control plane, which only maps an invitation's lookup key
+//! to the host's address for a limited time. It never sees a code.
 
 use std::time::Duration;
 
@@ -44,7 +44,7 @@ fn url(server: &str, path: &str) -> String {
 /// serve for them: sessions work, but a phone opening the link gets nothing.
 pub async fn is_current(server: &str) -> bool {
     let Ok(client) = client() else { return false };
-    match client.get(url(server, "/v1")).send().await {
+    match client.get(url(server, "/v2")).send().await {
         Ok(answer) if answer.status().is_success() => answer
             .text()
             .await
@@ -53,48 +53,54 @@ pub async fn is_current(server: &str) -> bool {
     }
 }
 
-pub async fn create(server: &str, host: &EndpointAddr, ttl: Duration) -> Result<InvitationCreated> {
+/// `None` when another invitation has that lookup key already: draw
+/// another code.
+pub async fn create(
+    server: &str,
+    lookup: &str,
+    host: &EndpointAddr,
+    ttl: Duration,
+) -> Result<Option<InvitationCreated>> {
     let request = CreateInvitation {
+        lookup: lookup.to_string(),
         host: serde_json::to_value(host)?,
         ttl: ttl.as_secs(),
     };
     let response = client()?
-        .post(url(server, "/v1/invitations"))
+        .post(url(server, "/v2/invitations"))
         .json(&request)
         .send()
         .await
         .with_context(|| format!("reaching the control plane at {server}"))?;
-    if !response.status().is_success() {
-        bail!(
-            "the control plane refused the invitation ({})",
-            response.status()
-        );
+    match response.status() {
+        StatusCode::CONFLICT => Ok(None),
+        status if status.is_success() => Ok(Some(response.json().await?)),
+        status => bail!("the control plane refused the invitation ({status})"),
     }
-    Ok(response.json().await?)
 }
 
-/// `None` when the code is unknown or expired.
-pub async fn lookup(server: &str, code: &str) -> Result<Option<EndpointAddr>> {
+/// `None` when the lookup key is unknown or expired.
+pub async fn lookup(server: &str, lookup: &str) -> Result<Option<EndpointAddr>> {
     let response = client()?
-        .get(url(server, &format!("/v1/invitations/{code}")))
+        .get(url(server, &format!("/v2/invitations/{lookup}")))
         .send()
         .await
         .with_context(|| format!("reaching the control plane at {server}"))?;
     match response.status() {
         StatusCode::NOT_FOUND => Ok(None),
         status if status.is_success() => {
-            let lookup: InvitationLookup = response.json().await?;
+            let found: InvitationLookup = response.json().await?;
             Ok(Some(
-                serde_json::from_value(lookup.host).context("decoding the host address")?,
+                serde_json::from_value(found.host).context("decoding the host address")?,
             ))
         }
         status => bail!("the control plane answered {status}"),
     }
 }
 
-pub async fn delete(server: &str, code: &str, owner_token: &str) -> Result<()> {
+pub async fn delete(server: &str, lookup: &str, owner_token: &str) -> Result<()> {
     client()?
-        .delete(url(server, &format!("/v1/invitations/{code}")))
+        .delete(url(server, &format!("/v2/invitations/{lookup}")))
         .bearer_auth(owner_token)
         .send()
         .await?;

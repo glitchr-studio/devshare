@@ -180,7 +180,7 @@ async fn sharing_without_a_control_plane_on_this_machine_brings_its_own() {
     let free = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = free.local_addr().unwrap().port();
     drop(free);
-    assert!(get(port, "/v1").await.is_none());
+    assert!(get(port, "/v2").await.is_none());
 
     let root = std::env::temp_dir().join(format!("devshare-own-{}", std::process::id()));
     std::fs::remove_dir_all(&root).ok();
@@ -244,7 +244,7 @@ async fn sharing_without_a_control_plane_on_this_machine_brings_its_own() {
     // It ends with the session: nothing is left listening.
     unsafe { libc::kill(host.id().unwrap() as i32, libc::SIGINT) };
     assert!(host.wait().await.unwrap().success());
-    assert!(get(port, "/v1").await.is_none());
+    assert!(get(port, "/v2").await.is_none());
 
     std::fs::remove_dir_all(&root).ok();
 }

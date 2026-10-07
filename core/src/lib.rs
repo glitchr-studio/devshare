@@ -8,6 +8,7 @@ pub mod environment;
 pub mod frame;
 pub mod guest;
 pub mod host;
+pub mod invite;
 pub mod link;
 pub mod probe;
 pub mod qr;

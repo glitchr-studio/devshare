@@ -172,15 +172,18 @@ fn the_window_shares_sees_a_login_and_disconnects_it() {
             .unwrap()
     });
     assert_eq!(end, End::Host(EndReason::Revoked));
-    until(&session_events, |session| {
-        session["guests"].as_array().unwrap().is_empty() && session["invitation_open"] == false
+    // The invitation stays open: only that device is turned away.
+    let after = until(&session_events, |session| {
+        session["guests"].as_array().unwrap().is_empty()
     });
+    assert_eq!(after["invitation_open"], true);
 
     // The New invitation button.
     assert_eq!(ask(&window, "invite", json!({})), Ok(Value::Null));
     let invited = until(&session_events, |session| {
-        session["invitation_open"] == true
+        session["code"] != started["code"]
     });
+    assert_eq!(invited["invitation_open"], true);
     assert_ne!(invited["code"], started["code"]);
 
     // The Stop sharing button.

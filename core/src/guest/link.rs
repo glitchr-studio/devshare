@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use devshare_protocol::{
-    code, Device, EndReason, Hello, HelloReply, HostEvent, Manifest, Open, OpenReply, RejectReason,
-    ALPN, MAX_FRAME, PROTOCOL_VERSION,
+    code, Confirm, Device, EndReason, Hello, HelloReply, HostEvent, Manifest, Open, OpenReply,
+    RejectReason, ALPN, MAX_FRAME, PROTOCOL_VERSION,
 };
 use iroh::{
     endpoint::{Connection, RecvStream, SendStream},
@@ -12,6 +12,7 @@ use iroh::{
 
 use crate::{
     control, direct, frame,
+    invite::{self, DeviceSecret, Pake, GUEST_PROOF, HOST_PROOF},
     link::{self, Route},
 };
 
@@ -118,6 +119,17 @@ impl GuestLink {
     /// plane, at `server`, is asked when the invitation carries no address,
     /// or when the address in it leads nowhere from here.
     pub async fn join(invitation: &str, server: &str, device: Device) -> Result<Self, JoinError> {
+        Self::join_as(invitation, server, device, &DeviceSecret::random()).await
+    }
+
+    /// The same, as a device the host can recognise if it comes back: a
+    /// host that disconnected this device keeps it out. See [`DeviceSecret`].
+    pub async fn join_as(
+        invitation: &str,
+        server: &str,
+        device: Device,
+        secret: &DeviceSecret,
+    ) -> Result<Self, JoinError> {
         let code = code::parse(invitation);
         let mut named: Option<iroh::EndpointId> = None;
         match direct::decode(invitation) {
@@ -130,7 +142,7 @@ impl GuestLink {
                 } else {
                     JOIN_TIMEOUT
                 };
-                match Self::connect(host, carried, device.clone(), patience).await {
+                match Self::connect(host, carried, device.clone(), secret, patience).await {
                     Err(JoinError::Failed(error)) if code.is_some() => {
                         tracing::debug!("the address in the invitation led nowhere: {error:#}");
                     }
@@ -140,8 +152,11 @@ impl GuestLink {
             None => {}
         }
 
+        // A typed code: the control plane knows the host by a key derived
+        // from it, slowly, and never sees the code itself.
         let code = code.ok_or(JoinError::Malformed)?;
-        let host = control::lookup(server, &code)
+        let lookup = invite::lookup_key(&code).await?;
+        let host = control::lookup(server, &lookup)
             .await?
             .ok_or(JoinError::NotFound)?;
         // The link said who the host is; the control plane does not get to
@@ -151,17 +166,22 @@ impl GuestLink {
                 "the control plane names another host than the invitation does"
             )));
         }
-        Self::connect(host, code, device, JOIN_TIMEOUT).await
+        Self::connect(host, code, device, secret, JOIN_TIMEOUT).await
     }
 
-    /// Connects to the host at `host` and presents the invitation `code`.
+    /// Connects to the host at `host` and proves the invitation `code`
+    /// without sending it; the host proves it back before anything it says
+    /// is believed.
     async fn connect(
         host: iroh::EndpointAddr,
         code: String,
         device: Device,
+        secret: &DeviceSecret,
         patience: Duration,
     ) -> Result<Self, JoinError> {
-        let endpoint = link::endpoint(false).await?;
+        let host_id = host.id;
+        let (pake, message) = Pake::guest(&code, &host_id).ok_or(JoinError::Malformed)?;
+        let endpoint = link::endpoint_as(false, Some(secret.key_for(&host_id))).await?;
 
         let joined = tokio::time::timeout(patience, async {
             let connection = endpoint
@@ -174,32 +194,44 @@ impl GuestLink {
                 .map_err(|error| anyhow!("{error}"))?;
             let hello = Hello {
                 protocol: PROTOCOL_VERSION,
-                invitation: code,
                 device,
                 capabilities: Vec::new(),
+                pake: message,
             };
             frame::write(&mut send, &hello).await?;
-            let reply: HelloReply = frame::read(&mut recv, MAX_FRAME).await?;
-            anyhow::Ok((connection, send, recv, reply))
+
+            let challenge = match frame::read::<_, HelloReply>(&mut recv, MAX_FRAME).await? {
+                HelloReply::Challenge { pake } => pake,
+                HelloReply::Reject { reason } => return Ok(Err((connection, reason))),
+                HelloReply::Welcome { .. } => anyhow::bail!("the host skipped the code exchange"),
+            };
+            let shared_key = pake
+                .finish(&challenge)
+                .ok_or_else(|| anyhow!("the host's part of the code exchange is not one"))?;
+            let confirm = Confirm {
+                mac: shared_key.prove(GUEST_PROOF),
+            };
+            frame::write(&mut send, &confirm).await?;
+
+            match frame::read::<_, HelloReply>(&mut recv, MAX_FRAME).await? {
+                HelloReply::Welcome {
+                    guest_id,
+                    manifest,
+                    mac,
+                } => {
+                    if !shared_key.verify(HOST_PROOF, &mac) {
+                        anyhow::bail!("the host could not prove it holds the invitation code");
+                    }
+                    Ok(Ok((connection, send, recv, guest_id, manifest)))
+                }
+                HelloReply::Reject { reason } => Ok(Err((connection, reason))),
+                HelloReply::Challenge { .. } => anyhow::bail!("the host repeated its challenge"),
+            }
         })
         .await;
 
-        let (connection, send, recv, reply) = match joined {
-            Ok(Ok(joined)) => joined,
-            Ok(Err(error)) => {
-                endpoint.close().await;
-                return Err(JoinError::Failed(error));
-            }
-            Err(_) => {
-                endpoint.close().await;
-                return Err(JoinError::Failed(anyhow!(
-                    "the host did not answer in time"
-                )));
-            }
-        };
-
-        match reply {
-            HelloReply::Welcome { guest_id, manifest } => Ok(Self {
+        match joined {
+            Ok(Ok(Ok((connection, send, recv, guest_id, manifest)))) => Ok(Self {
                 endpoint,
                 connection,
                 control: recv,
@@ -207,10 +239,20 @@ impl GuestLink {
                 guest_id,
                 manifest,
             }),
-            HelloReply::Reject { reason } => {
+            Ok(Ok(Err((connection, reason)))) => {
                 connection.close(0u32.into(), b"rejected");
                 endpoint.close().await;
                 Err(JoinError::Rejected(reason))
+            }
+            Ok(Err(error)) => {
+                endpoint.close().await;
+                Err(JoinError::Failed(error))
+            }
+            Err(_) => {
+                endpoint.close().await;
+                Err(JoinError::Failed(anyhow!(
+                    "the host did not answer in time"
+                )))
             }
         }
     }

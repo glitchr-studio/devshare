@@ -59,7 +59,7 @@ expect "its invitation is said to work from any network" "work from any network"
 echo
 echo "The guest, somewhere else"
 address=$(host sh -c "hostname -i | cut -d' ' -f1")
-refuse "it cannot reach the host's machine" guest curl -s -m 4 "http://$address:8787/v1"
+refuse "it cannot reach the host's machine" guest curl -s -m 4 "http://$address:8787/v2"
 refuse "nor find it by name" guest getent hosts host
 expect "it does reach the relay, like the host" "200" guest curl -s -m 5 -o /dev/null -w '%{http_code}' http://relay:3340/
 refuse "the code alone is no use to it: its control plane is out of reach" guest sh -c "devshare join '$code'"
@@ -89,7 +89,7 @@ expect "http://admin.test" "service=admin host=admin.test" guest curl -fsS -m 15
 expect "https://shop.test, verified end to end" "service=shop-tls host=shop.test" guest curl -fsS -m 15 --cacert /shared/shop.pem https://shop.test/
 refuse "not the database port of a shared hostname" guest curl -s -m 5 http://shop.test:5432/
 refuse "not the environment that was not shared" guest curl -s -m 5 http://grafana.test:3000/
-refuse "and still not the host's machine itself" guest curl -s -m 4 "http://$address:8787/v1"
+refuse "and still not the host's machine itself" guest curl -s -m 4 "http://$address:8787/v2"
 
 echo
 echo "The end of the session"

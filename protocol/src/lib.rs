@@ -2,9 +2,10 @@
 //! messages exchanged between a guest and a host, the control-plane API, and
 //! what a guest and the privileged helper say to each other.
 //!
-//! PROVISIONAL: the invitation scheme below (a short code that is both the
-//! lookup key on the control plane and the bearer secret presented to the
-//! host) is a placeholder: it has not had its security review yet.
+//! Protocol 2. The invitation code is drawn by the host and never sent to
+//! anyone: it is the password of a SPAKE2 exchange between the guest and the
+//! host, and the control plane only ever sees a slow-to-compute key derived
+//! from it, which lets a guest find the host but not join it.
 
 use std::collections::BTreeMap;
 
@@ -17,17 +18,17 @@ pub mod names;
 pub mod system_dns;
 
 /// Version of the guest/host wire protocol.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Version of the manifest schema.
 pub const MANIFEST_VERSION: u32 = 1;
 
 /// ALPN of the guest/host link.
-pub const ALPN: &[u8] = b"devshare/1";
+pub const ALPN: &[u8] = b"devshare/2";
 
-/// What a control plane answers to `GET /v1`: how it is told from anything
-/// else that listens on a port, and from a version too old to say it.
-pub const CONTROL_PLANE: &str = "devshare control plane, protocol 1\n";
+/// What a control plane answers to `GET /v2`: how it is told from anything
+/// else that listens on a port, and from another version.
+pub const CONTROL_PLANE: &str = "devshare control plane, protocol 2\n";
 
 /// Upper bound of a control message, manifest included.
 pub const MAX_FRAME: usize = 1024 * 1024;
@@ -166,15 +167,25 @@ pub fn normalize_host(host: &str) -> String {
 
 // ------------------------------------------------------------ guest ↔ host
 
-/// First message of a guest, on the control stream.
+/// First message of a guest, on the control stream. The invitation code is
+/// not in it: `pake` is the guest's SPAKE2 message, made with the code as
+/// the password.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hello {
     pub protocol: u32,
-    pub invitation: String,
     pub device: Device,
     /// Optional features the guest understands, for manifest negotiation.
     #[serde(default)]
     pub capabilities: Vec<String>,
+    pub pake: Vec<u8>,
+}
+
+/// The guest's proof that it derived the same key as the host, sent after
+/// the host's [`HelloReply::Challenge`]: an HMAC of a fixed label under that
+/// key. A guest with the wrong code cannot make it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Confirm {
+    pub mac: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -207,12 +218,25 @@ impl Device {
     }
 }
 
-/// The host's answer to [`Hello`].
+/// The host's answers during admission: a challenge to [`Hello`], then a
+/// welcome to [`Confirm`]; a refusal at either step.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HelloReply {
-    Welcome { guest_id: u32, manifest: Manifest },
-    Reject { reason: RejectReason },
+    /// The host's SPAKE2 message.
+    Challenge {
+        pake: Vec<u8>,
+    },
+    /// `mac` is the host's own proof, under the same key: a guest checks it
+    /// before trusting anything else the host says.
+    Welcome {
+        guest_id: u32,
+        manifest: Manifest,
+        mac: Vec<u8>,
+    },
+    Reject {
+        reason: RejectReason,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,6 +246,8 @@ pub enum RejectReason {
     InvalidInvitation,
     SessionFull,
     SessionEnded,
+    /// The host disconnected this device: it may not come back.
+    Revoked,
 }
 
 impl std::fmt::Display for RejectReason {
@@ -231,6 +257,7 @@ impl std::fmt::Display for RejectReason {
             Self::InvalidInvitation => "the invitation is invalid or has expired",
             Self::SessionFull => "the session has reached its maximum number of guests",
             Self::SessionEnded => "the session has ended",
+            Self::Revoked => "the host disconnected this device from the session",
         })
     }
 }
@@ -254,6 +281,8 @@ pub enum EndReason {
     Expired,
     Stopped,
     Revoked,
+    /// The same device joined again, from another process: that one stays.
+    Replaced,
 }
 
 impl std::fmt::Display for EndReason {
@@ -262,6 +291,7 @@ impl std::fmt::Display for EndReason {
             Self::Expired => "the session expired",
             Self::Stopped => "the host stopped sharing",
             Self::Revoked => "the host revoked this device",
+            Self::Replaced => "this device joined the session again from another process",
         })
     }
 }
@@ -283,9 +313,12 @@ pub enum OpenReply {
 
 // ----------------------------------------------------------- control plane
 
-/// `POST /v1/invitations`
+/// `POST /v2/invitations`. `lookup` is the key a guest finds the host by
+/// (32 hexadecimal digits); the code it is derived from never reaches the
+/// control plane.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateInvitation {
+    pub lookup: String,
     /// Where to reach the host. Opaque to the control plane.
     pub host: serde_json::Value,
     /// Seconds the invitation stays redeemable.
@@ -294,16 +327,21 @@ pub struct CreateInvitation {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvitationCreated {
-    pub code: String,
     /// Lets the host, and only the host, withdraw the invitation.
     pub owner_token: String,
     pub ttl: u64,
 }
 
-/// `GET /v1/invitations/{code}`
+/// `GET /v2/invitations/{lookup}`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvitationLookup {
     pub host: serde_json::Value,
+}
+
+/// Whether `text` is shaped like a lookup key: 32 lowercase hexadecimal
+/// digits.
+pub fn is_lookup(text: &str) -> bool {
+    text.len() == 32 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 #[cfg(test)]

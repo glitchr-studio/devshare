@@ -1,6 +1,6 @@
-//! The control plane. It maps an invitation code to the address of a host
-//! for a limited time, and knows nothing else: not what is shared, not who
-//! joined.
+//! The control plane. It maps an invitation's lookup key to the address of
+//! a host for a limited time, and knows nothing else: not the code, which
+//! never reaches it, not what is shared, not who joined.
 
 use std::{
     collections::HashMap,
@@ -15,7 +15,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use devshare_protocol::{code, CreateInvitation, InvitationCreated, InvitationLookup};
+use devshare_protocol::{code, is_lookup, CreateInvitation, InvitationCreated, InvitationLookup};
 
 /// An invitation never outlives this, whatever the host asks for.
 const MAX_TTL: u64 = 24 * 60 * 60;
@@ -93,7 +93,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// What `GET /v1` answers: how a control plane is told from anything else
+/// What `GET /v2` answers: how a control plane is told from anything else
 /// that listens on a port.
 pub const IDENTITY: &str = devshare_protocol::CONTROL_PLANE;
 
@@ -104,7 +104,7 @@ pub async fn answers_at(address: std::net::SocketAddr) -> bool {
     let asked = async {
         let mut stream = tokio::net::TcpStream::connect(address).await.ok()?;
         stream
-            .write_all(b"GET /v1 HTTP/1.0\r\nHost: localhost\r\n\r\n")
+            .write_all(b"GET /v2 HTTP/1.0\r\nHost: localhost\r\n\r\n")
             .await
             .ok()?;
         let mut answer = String::new();
@@ -162,9 +162,9 @@ fn local_port(server: &str) -> Option<u16> {
 pub fn router(registry: Registry) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
-        .route("/v1", get(|| async { IDENTITY }))
-        .route("/v1/invitations", post(create))
-        .route("/v1/invitations/{code}", get(lookup).delete(withdraw))
+        .route("/v2", get(|| async { IDENTITY }))
+        .route("/v2/invitations", post(create))
+        .route("/v2/invitations/{lookup}", get(lookup).delete(withdraw))
         .route("/{code}", get(page))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .with_state(registry)
@@ -201,6 +201,9 @@ async fn create(
     if request.host.to_string().len() > MAX_HOST {
         return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }
+    if !is_lookup(&request.lookup) {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
     let ttl = request.ttl.min(MAX_TTL);
     let owner_token: String = rand::random::<[u8; 32]>()
         .iter()
@@ -212,37 +215,31 @@ async fn create(
     if invitations.len() >= MAX_INVITATIONS {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
-    let code = loop {
-        let candidate = code::from_random(rand::random());
-        if !invitations.contains_key(&candidate) {
-            break candidate;
-        }
-    };
+    // The host draws the code: a lookup key already taken means drawing again.
+    if invitations.contains_key(&request.lookup) {
+        return Err(StatusCode::CONFLICT);
+    }
     invitations.insert(
-        code.clone(),
+        request.lookup,
         Invitation {
             host: request.host,
             owner_token: owner_token.clone(),
             expires: Instant::now() + Duration::from_secs(ttl),
         },
     );
-    Ok(Json(InvitationCreated {
-        code,
-        owner_token,
-        ttl,
-    }))
+    Ok(Json(InvitationCreated { owner_token, ttl }))
 }
 
 async fn lookup(
     State(registry): State<Registry>,
     ConnectInfo(from): ConnectInfo<SocketAddr>,
-    Path(code): Path<String>,
+    Path(lookup): Path<String>,
 ) -> Result<Json<InvitationLookup>, StatusCode> {
     if !registry.allow(from.ip(), COST_LOOKUP) {
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
     let invitations = registry.invitations.lock().unwrap();
-    match invitations.get(&code) {
+    match invitations.get(&lookup) {
         Some(invitation) if invitation.expires > Instant::now() => Ok(Json(InvitationLookup {
             host: invitation.host.clone(),
         })),
@@ -266,12 +263,9 @@ async fn page(
     // Said to whoever runs this: the one sign that a device which scanned
     // the QR code did reach this machine.
     tracing::info!("the invitation page was opened from {}", from.ip());
-    let known = code::parse(&asked).filter(|code| {
-        let invitations = registry.invitations.lock().unwrap();
-        invitations
-            .get(code)
-            .is_some_and(|invitation| invitation.expires > Instant::now())
-    });
+    // The control plane does not know codes: the page shows the one in its
+    // address, which only the host can confirm.
+    let known = code::parse(&asked);
     let (status, body) = match known {
         // The code is made of letters and digits of its own alphabet only:
         // nothing of the request is written back as it came.
@@ -316,13 +310,13 @@ const PAGE_INVITED: &str = r#"<h1>You are invited to a DevShare session</h1>
 const PAGE_SLOW_DOWN: &str = r#"<h1>Too many requests</h1>
 <p>This address asked for too many pages in a short time. Try again in a minute.</p>"#;
 
-const PAGE_GONE: &str = r#"<h1>This invitation is no longer valid</h1>
-<p>It expired, was withdrawn, or was mistyped. Ask whoever shared it for a new one.</p>"#;
+const PAGE_GONE: &str = r#"<h1>This is not an invitation</h1>
+<p>Ask whoever shared it for their invitation link or QR code.</p>"#;
 
 async fn withdraw(
     State(registry): State<Registry>,
     ConnectInfo(from): ConnectInfo<SocketAddr>,
-    Path(code): Path<String>,
+    Path(lookup): Path<String>,
     headers: HeaderMap,
 ) -> StatusCode {
     if !registry.allow(from.ip(), COST_LOOKUP) {
@@ -333,11 +327,11 @@ async fn withdraw(
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "));
     let mut invitations = registry.invitations.lock().unwrap();
-    match (invitations.get(&code), presented) {
+    match (invitations.get(&lookup), presented) {
         (Some(invitation), Some(token))
             if constant_time_eq(invitation.owner_token.as_bytes(), token.as_bytes()) =>
         {
-            invitations.remove(&code);
+            invitations.remove(&lookup);
             StatusCode::NO_CONTENT
         }
         // The same answer whether the code exists or not.

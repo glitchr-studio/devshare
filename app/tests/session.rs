@@ -8,7 +8,8 @@ use devshare_core::{
     environment::{Config, EnvironmentDef, ServiceDef},
     guest::{End, GuestLink, JoinError},
     host::ShareOptions,
-    protocol::{Device, EndReason},
+    invite::DeviceSecret,
+    protocol::{Device, EndReason, RejectReason},
 };
 use tokio::{net::TcpListener, sync::mpsc};
 
@@ -118,9 +119,15 @@ async fn the_owner_sees_logins_and_disconnects_one_guest() {
         .contains("did not answer"));
 
     // Two people join: the owner sees their logins and their computers.
-    let mut alice = GuestLink::join(&empty.code, &server, guest("alice", "Alices-MacBook"))
-        .await
-        .unwrap();
+    let alices_mac = DeviceSecret::random();
+    let mut alice = GuestLink::join_as(
+        &empty.code,
+        &server,
+        guest("alice", "Alices-MacBook"),
+        &alices_mac,
+    )
+    .await
+    .unwrap();
     let bob = GuestLink::join(&empty.link, &server, guest("bob", "bob-thinkpad"))
         .await
         .unwrap();
@@ -142,27 +149,33 @@ async fn the_owner_sees_logins_and_disconnects_one_guest() {
         .iter()
         .any(|notice| notice.text == "alice on Alices-MacBook joined."));
 
-    // The owner disconnects Alice. Bob stays, the invitation is withdrawn.
+    // The owner disconnects Alice. Bob stays, the invitation stays open, and
+    // Alice's device cannot come back.
     assert!(session.disconnect(alice.guest_id).await);
     assert!(!session.disconnect(99).await);
     let end = tokio::time::timeout(Duration::from_secs(5), alice.ended())
         .await
         .unwrap();
     assert_eq!(end, End::Host(EndReason::Revoked));
-    let after = window
-        .until(|snapshot| snapshot.guests.len() == 1 && !snapshot.invitation_open)
-        .await;
+    let after = window.until(|snapshot| snapshot.guests.len() == 1).await;
+    assert!(after.invitation_open);
     assert_eq!(after.guests[0].user.as_deref(), Some("bob"));
     assert!(after
         .notices
         .iter()
         .any(|notice| notice.text == "You disconnected alice on Alices-MacBook."));
     assert!(matches!(
-        GuestLink::join(&empty.code, &server, guest("alice", "Alices-MacBook")).await,
-        Err(JoinError::NotFound)
+        GuestLink::join_as(
+            &empty.code,
+            &server,
+            guest("alice", "Alices-MacBook"),
+            &alices_mac
+        )
+        .await,
+        Err(JoinError::Rejected(RejectReason::Revoked))
     ));
 
-    // A new invitation: another code, and the door is open again.
+    // A new invitation: another code, the first one retired.
     session.invite().await.unwrap();
     let invited = window
         .until(|snapshot| snapshot.invitation_open && snapshot.code != empty.code)

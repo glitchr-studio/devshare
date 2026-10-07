@@ -104,12 +104,19 @@ join "$code" || { guest cat /tmp/join.log; echo "the guest could not join"; exit
 expect "the guest joined" "guest 1 joined" host cat /shared/share.log
 if [[ $mode == helper ]]; then
     expect "the guest's process runs as the ordinary user" "guest" guest sh -c 'ps -o user= -C devshare | head -1'
-    expect "a second session for the same user is refused" "one at a time" guest su -s /bin/sh guest -c "env $(environment) devshare join '$code' 2>&1 || true"
+    # The same device again: it takes over at the host, and the helper,
+    # which serves one session per user, refuses it a second interface.
+    expect "the same user cannot have two sessions" "one at a time" guest su -s /bin/sh guest -c "env $(environment) devshare join '$code' 2>&1 || true"
 fi
 guest pkill -KILL -x devshare
 # No goodbye from a killed process: the host waits for the link to time out.
-until_true 25 host grep -q 'guest 1 left' /shared/share.log
-expect "the host sees it leave" "guest 1 left" host cat /shared/share.log
+# Every guest that joined has then left, whatever their numbers.
+all_left() {
+    host sh -c '[ "$(grep -c "^● guest" /shared/share.log)" = "$(grep -c "^○ guest" /shared/share.log)" ]'
+}
+said_left() { all_left && echo left; }
+until_true 25 all_left
+expect "the host sees it leave" "left" said_left
 refuse "its interface is gone" guest sh -c "ip -o -4 addr | grep -q 198.18.90.1"
 if [[ $mode == helper ]]; then
     until_true 10 guest sh -c '! grep -q devshare /etc/hosts'
@@ -211,7 +218,14 @@ refuse "the guest process is gone" guest pgrep -x devshare
 refuse "the interface is gone" guest sh -c "ip -o -4 addr | grep -q 198.18.90.1"
 refuse "the names are gone from the hosts file" guest grep -q devshare /etc/hosts
 refuse "shop.test no longer resolves" guest getent hosts shop.test
-expect "its code lets nobody in any more" "no session for this invitation" guest sh -c "devshare join '$code' 2>&1 || true"
+# The host keeps this device out by its key, whatever code it brings; the
+# invitation stays open for others. Same user, same device secret.
+if [[ $mode == helper ]]; then
+    rejoin=(su -s /bin/sh guest -c "env $(environment) devshare join '$code' 2>&1 || true")
+else
+    rejoin=(sh -c "devshare join '$code' 2>&1 || true")
+fi
+expect "its device cannot come back, even with the code" "the host disconnected this device" guest "${rejoin[@]}"
 
 echo
 echo "The end of the session"

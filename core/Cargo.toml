@@ -20,6 +20,10 @@ simple-dns = "0.12"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rand = "0.9"
 base64 = "0.22"
+spake2 = "0.4"
+argon2 = "0.6"
+hkdf = "0.13"
+hmac = "0.13"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 toml = "0.8"
 serde_yaml_ng = "0.10"

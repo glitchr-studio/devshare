@@ -7,6 +7,7 @@ use devshare_core::{
     environment::{Config, EnvironmentDef, ServiceDef},
     guest::{End, GuestLink, JoinError, OpenError, Opener},
     host::{Activity, Share, ShareOptions},
+    invite::DeviceSecret,
     protocol::{Device, EndReason, RejectReason},
 };
 use tokio::{
@@ -267,7 +268,8 @@ async fn a_session_expires_for_everyone() {
 async fn revoking_a_guest_spares_the_others_and_closes_the_door() {
     let mut session = session(Duration::from_secs(60), 3).await;
     let code = session.share.code().to_string();
-    let mut dave = GuestLink::join(&code, &session.server, device("dave"))
+    let daves_laptop = DeviceSecret::random();
+    let mut dave = GuestLink::join_as(&code, &session.server, device("dave"), &daves_laptop)
         .await
         .unwrap();
     let mut erin = GuestLink::join(&code, &session.server, device("erin"))
@@ -285,15 +287,21 @@ async fn revoking_a_guest_spares_the_others_and_closes_the_door() {
     tokio::time::sleep(Duration::from_millis(700)).await;
     assert!(call(&dave_opener, "shop.test", 443, "x").await.is_err());
 
-    // Erin keeps working; Dave's code lets nobody in any more.
+    // Erin keeps working; Dave's device is turned away, even with the right
+    // code; the invitation stays open for anyone else.
     assert_eq!(
         call(&erin_opener, "shop.test", 443, "ok").await.unwrap(),
         "shop|ok"
     );
     assert!(matches!(
-        GuestLink::join(&code, &session.server, device("dave again")).await,
-        Err(JoinError::NotFound)
+        GuestLink::join_as(&code, &session.server, device("dave"), &daves_laptop).await,
+        Err(JoinError::Rejected(RejectReason::Revoked))
     ));
+    assert!(session.share.invitation_open());
+    let fay = GuestLink::join(&code, &session.server, device("fay"))
+        .await
+        .unwrap();
+    fay.close().await;
 
     // Stopping tells the guests that remain.
     while !matches!(next(&mut session.share).await, Activity::GuestLeft { .. }) {}
@@ -325,15 +333,15 @@ async fn the_owner_sees_who_is_connected_and_can_invite_again() {
         .iter()
         .all(|guest| guest.connected < Duration::from_secs(5)));
 
-    // Frank is disconnected: the door closes behind him.
+    // Frank is disconnected; the invitation stays open for the others.
     assert!(session.share.revoke(frank.guest_id).await);
-    assert!(!session.share.invitation_open());
+    assert!(session.share.invitation_open());
     let end = tokio::time::timeout(Duration::from_secs(5), frank.ended())
         .await
         .unwrap();
     assert_eq!(end, End::Host(EndReason::Revoked));
 
-    // A new invitation opens it again, under another code.
+    // A new invitation retires the first code.
     let second_code = session.share.invite().await.unwrap();
     assert_ne!(second_code, first_code);
     assert_eq!(session.share.code(), second_code);
@@ -379,7 +387,8 @@ async fn a_guest_that_cannot_reach_the_control_plane_joins_with_the_hosts_own_ad
         GuestLink::join(&session.share.code(), nowhere, device("remote")).await,
         Err(JoinError::Failed(_))
     ));
-    let mut link = GuestLink::join(&invitation, nowhere, device("remote"))
+    let remote_laptop = DeviceSecret::random();
+    let mut link = GuestLink::join_as(&invitation, nowhere, device("remote"), &remote_laptop)
         .await
         .unwrap();
     assert!(matches!(
@@ -398,17 +407,21 @@ async fn a_guest_that_cannot_reach_the_control_plane_joins_with_the_hosts_own_ad
         Err(OpenError::Denied)
     ));
 
-    // Disconnected by the host, its invitation lets nobody in any more: the
-    // host's address alone opens nothing.
+    // Disconnected by the host, that device cannot come back with the same
+    // invitation; another device still can.
     assert!(session.share.revoke(link.guest_id).await);
     let end = tokio::time::timeout(Duration::from_secs(5), link.ended())
         .await
         .unwrap();
     assert_eq!(end, End::Host(EndReason::Revoked));
     assert!(matches!(
-        GuestLink::join(&invitation, nowhere, device("remote")).await,
-        Err(JoinError::Rejected(RejectReason::InvalidInvitation))
+        GuestLink::join_as(&invitation, nowhere, device("remote"), &remote_laptop).await,
+        Err(JoinError::Rejected(RejectReason::Revoked))
     ));
+    let other = GuestLink::join(&invitation, nowhere, device("other"))
+        .await
+        .unwrap();
+    other.close().await;
 
     // A new invitation is a new one of these too.
     session.share.invite().await.unwrap();
@@ -610,5 +623,105 @@ async fn after_too_many_wrong_codes_the_invitation_closes_until_a_new_one() {
         .await
         .unwrap();
     guest.close().await;
+    session.share.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_control_plane_that_lies_about_the_host_learns_nothing_and_admits_nobody() {
+    use devshare_core::direct;
+    use std::sync::{Arc, Mutex};
+    use tokio::io::AsyncReadExt;
+
+    let alice = session(Duration::from_secs(60), 3).await;
+    let mut bob = session(Duration::from_secs(60), 3).await;
+    let (bobs_host, _) = direct::decode(&bob.share.direct_invitation())
+        .unwrap()
+        .unwrap();
+
+    // A control plane that answers every lookup with Bob's host, and keeps
+    // what it is sent.
+    let liar = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let liar_url = format!("http://{}", liar.local_addr().unwrap());
+    let heard = Arc::new(Mutex::new(String::new()));
+    let answer = serde_json::json!({ "host": bobs_host }).to_string();
+    tokio::spawn({
+        let heard = heard.clone();
+        async move {
+            while let Ok((mut stream, _)) = liar.accept().await {
+                let mut request = vec![0u8; 4096];
+                let read = stream.read(&mut request).await.unwrap_or(0);
+                heard
+                    .lock()
+                    .unwrap()
+                    .push_str(&String::from_utf8_lossy(&request[..read]));
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{answer}",
+                    answer.len()
+                );
+                stream.write_all(reply.as_bytes()).await.ok();
+            }
+        }
+    });
+
+    // Alice's code, typed, looked up on the liar: the guest reaches Bob's
+    // host, which cannot complete the exchange with a code it does not know.
+    let typed = alice.share.code();
+    assert!(matches!(
+        GuestLink::join(&typed, &liar_url, device("misled")).await,
+        Err(JoinError::Rejected(RejectReason::InvalidInvitation))
+    ));
+    assert!(matches!(
+        next(&mut bob.share).await,
+        Activity::Refused {
+            reason: RejectReason::InvalidInvitation
+        }
+    ));
+    assert!(alice.share.guests().is_empty() && bob.share.guests().is_empty());
+
+    // All the liar ever heard is a lookup key: never the code.
+    let heard = heard.lock().unwrap().clone();
+    assert!(heard.contains("GET /v2/invitations/"), "{heard}");
+    assert!(
+        !heard.contains(&typed) && !heard.contains(&typed[..4]),
+        "{heard}"
+    );
+
+    alice.share.stop().await;
+    bob.share.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_same_device_joining_again_takes_its_own_place() {
+    let mut session = session(Duration::from_secs(60), 1).await;
+    let code = session.share.code();
+    let laptop = DeviceSecret::random();
+    let mut first = GuestLink::join_as(&code, &session.server, device("ivan"), &laptop)
+        .await
+        .unwrap();
+    next(&mut session.share).await;
+
+    // The session is full, but this is the same device, after a crash for
+    // instance: it takes over, and the earlier process is told.
+    let second = GuestLink::join_as(&code, &session.server, device("ivan"), &laptop)
+        .await
+        .unwrap();
+    let end = tokio::time::timeout(Duration::from_secs(5), first.ended())
+        .await
+        .unwrap();
+    assert_eq!(end, End::Host(EndReason::Replaced));
+    assert_eq!(session.share.guests().len(), 1);
+    assert_eq!(
+        call(&second.opener(), "shop.test", 443, "back")
+            .await
+            .unwrap(),
+        "shop|back"
+    );
+
+    // Another device still finds it full.
+    assert!(matches!(
+        GuestLink::join(&code, &session.server, device("judy")).await,
+        Err(JoinError::Rejected(RejectReason::SessionFull))
+    ));
+    second.close().await;
     session.share.stop().await;
 }
