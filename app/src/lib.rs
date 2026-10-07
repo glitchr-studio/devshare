@@ -2,5 +2,6 @@
 //! can ask for. Kept apart from the window so it can be tested without one.
 
 pub mod commands;
+pub mod joined;
 pub mod projects;
 pub mod session;

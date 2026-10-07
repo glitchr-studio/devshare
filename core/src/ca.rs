@@ -263,6 +263,12 @@ impl DeviceCa {
         })
     }
 
+    /// Whether the helper recorded that this computer trusts it.
+    pub fn trusted(&self) -> bool {
+        std::fs::read_to_string(devshare_protocol::helper::TRUSTED_CAS)
+            .is_ok_and(|record| devshare_protocol::helper::records(&record, self.sha256()))
+    }
+
     /// Whether its constraints let it vouch for `name`.
     pub fn covers(&self, name: &str) -> bool {
         let name = normalize_host(name);

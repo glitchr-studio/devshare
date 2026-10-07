@@ -126,6 +126,18 @@ remove` removes it; uninstalling the helper removes every one it installed.
 Firefox on Linux keeps its own list of authorities and needs it imported by
 hand.
 
+## The desktop app
+
+`app/` is the same thing with a window (Tauri): pick projects, share, see who
+is connected by their computer's login, disconnect someone, stop. It also
+joins: paste an invitation, or click "Open in the DevShare app" on an
+invitation page, which hands it over through a `devshare://` link. The app
+then shows the invitation and waits for a click: a page can never make it
+join a session on its own. Joining uses the helper, like `devshare join`
+without sudo. `make app` runs it, `make dmg` builds an unsigned
+`dist/DevShare.app` and disk image; the `devshare://` link only works once
+the app is in Applications.
+
 ## Commands
 
 | Command | What it does |

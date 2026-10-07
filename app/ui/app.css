@@ -162,3 +162,20 @@ pre {
 .notices li { display: flex; gap: 10px; padding: 3px 0; font-size: 12px; color: var(--muted); }
 .notices time { flex: none; font-variant-numeric: tabular-nums; }
 .notices .warning { color: var(--attention); }
+
+/* Joining */
+
+.join form { display: flex; gap: 8px; margin-bottom: 8px; }
+.join input { flex: 1; -webkit-user-select: text; user-select: text; }
+.join .error { margin-top: 0; white-space: pre-wrap; }
+.join #handed { color: var(--attention); }
+
+.joined { padding: 16px 20px; overflow-y: auto; }
+.joined h3 { margin: 14px 0 6px; font-size: 13px; font-weight: 600; display: flex; gap: 10px; align-items: center; }
+.joined h3:first-child { margin-top: 0; }
+.joined ul { margin-bottom: 8px; }
+.joined li { display: flex; gap: 10px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.joined li:first-child { border-top: 1px solid var(--line); }
+.joined li .mono { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.joined .tag { font-size: 10px; letter-spacing: 0.04em; color: var(--muted); }
+.joined .tag.certified { color: var(--present); }

@@ -18,6 +18,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
+    time::{Duration, SystemTime},
 };
 
 use rustls::{
@@ -33,7 +34,12 @@ use rustls::{
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_rustls::{LazyConfigAcceptor, TlsConnector};
 
-use crate::{ca::Minter, probe::fingerprint};
+use devshare_protocol::{Manifest, Service};
+
+use crate::{
+    ca::{DeviceCa, Minter},
+    probe::fingerprint,
+};
 
 /// What a tunnel needs to terminate TLS: the session's certificates.
 pub struct Termination {
@@ -52,6 +58,42 @@ impl Termination {
     /// Whether connections to `name` are terminated here.
     pub fn covers(&self, name: &str) -> bool {
         self.minter.mints(name)
+    }
+
+    /// The termination of a session just joined, when this device has its
+    /// own certificate authority and the computer trusts it. `domain` is
+    /// the guest's own, besides the development domains. Without one,
+    /// connections pass through untouched.
+    pub fn for_session(manifest: &Manifest, domain: &str) -> Option<Self> {
+        let ca = match DeviceCa::load(&[domain.to_string()]) {
+            Ok(Some(ca)) => ca,
+            Ok(None) => return None,
+            Err(error) => {
+                tracing::warn!("{error:#}");
+                return None;
+            }
+        };
+        if !ca.trusted() {
+            return None;
+        }
+        let until = SystemTime::now() + Duration::from_secs(manifest.session.expires_in);
+        match ca.minter(&manifest.hostnames(), until) {
+            Ok(minter) => Some(Self::new(minter)),
+            Err(error) => {
+                tracing::warn!("no certificates for this session: {error:#}");
+                None
+            }
+        }
+    }
+
+    /// The services of `manifest` this termination certifies.
+    pub fn certified<'a>(&self, manifest: &'a Manifest) -> Vec<&'a Service> {
+        manifest
+            .environments
+            .values()
+            .flat_map(|environment| &environment.services)
+            .filter(|service| service.tls.is_some() && self.covers(&service.host))
+            .collect()
     }
 }
 
@@ -200,8 +242,6 @@ impl ServerCertVerifier for Pinned {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, SystemTime};
-
     use rcgen::{CertifiedKey as Generated, KeyPair};
     use rustls::{pki_types::PrivateKeyDer, RootCertStore};
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};

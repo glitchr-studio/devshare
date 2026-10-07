@@ -1,6 +1,7 @@
-// The window of the DevShare host app. It displays what the app sends and
-// asks for seven things: what is declared, add a project, remove one, share,
-// disconnect, invite, stop.
+// The window of the DevShare app. It displays what the app sends and asks
+// for what is declared, add a project, remove one, share, disconnect,
+// invite, stop; and, as a guest, join, leave, open an address of the joined
+// session, and the invitation a link handed over.
 //
 // Names of guests come from their computers: they are only ever written as
 // text, never as markup.
@@ -25,6 +26,7 @@ function clock(seconds) {
 function show(view) {
   $('setup').hidden = view !== 'setup';
   $('session').hidden = view !== 'session';
+  $('joined').hidden = view !== 'joined';
 }
 
 // ---------------------------------------------------------- before sharing
@@ -264,10 +266,91 @@ $('invite').addEventListener('click', async () => {
 });
 $('stop').addEventListener('click', () => invoke('stop'));
 
+// ------------------------------------------------------------ as a guest
+
+// An invitation from a link is only ever shown: joining is the owner's
+// click, never the page's.
+function handed(invitation) {
+  if (!invitation || !$('joined').hidden || !$('session').hidden) return;
+  $('join-invitation').value = invitation;
+  $('handed').hidden = false;
+  $('join-error').textContent = '';
+  $('join').classList.add('primary');
+  $('join').focus();
+}
+
+$('join-invitation').addEventListener('input', () => { $('handed').hidden = true; });
+
+$('join-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const invitation = $('join-invitation').value.trim();
+  if (!invitation) return;
+  $('join-error').textContent = '';
+  $('join').disabled = true;
+  $('join').textContent = 'Joining…';
+  try {
+    await invoke('join', { invitation });
+    $('join-invitation').value = '';
+    $('handed').hidden = true;
+  } catch (error) {
+    $('join-error').textContent = String(error);
+  }
+  $('join').disabled = false;
+  $('join').textContent = 'Join';
+  $('join').classList.remove('primary');
+});
+
+function opener(url, label) {
+  const button = element('button', { type: 'button', textContent: label });
+  button.addEventListener('click', () => invoke('open', { url }).catch(() => {}));
+  return button;
+}
+
+let joinedOnce = false;
+
+function renderJoined(view) {
+  $('joined-names').textContent = view.environments.map((environment) => environment.name).join(', ');
+  $('joined-remaining').textContent = clock(view.remaining);
+  $('joined-remaining').parentElement.classList.toggle('soon', view.remaining < 60);
+  $('joined-route').textContent = view.route
+    ? `Connected, ${view.route}, ${view.latency} ms.`
+    : 'Connecting…';
+
+  // What is shared does not change during a session.
+  if (!joinedOnce) {
+    joinedOnce = true;
+    $('joined-environments').replaceChildren(...view.environments.flatMap((environment) => [
+      element('h3', {}, [
+        element('span', { textContent: environment.name }),
+        ...(environment.entrypoint ? [opener(environment.entrypoint, 'Open')] : []),
+      ]),
+      element('ul', {}, environment.services.map((service) =>
+        element('li', {}, [
+          element('span', { className: 'mono', textContent: service.address }),
+          ...(service.certified
+            ? [element('span', { className: 'tag certified', textContent: 'HTTPS, certified by this computer' })]
+            : service.tls ? [element('span', { className: 'tag', textContent: 'HTTPS' })] : []),
+          opener(service.url, 'Open'),
+        ]))),
+    ]));
+  }
+  show('joined');
+}
+
+$('leave').addEventListener('click', () => invoke('leave'));
+
+listen('joined', (event) => renderJoined(event.payload));
+listen('left', (event) => {
+  joinedOnce = false;
+  $('joined-environments').replaceChildren();
+  setup(event.payload);
+});
+listen('invitation', (event) => handed(event.payload));
+
 listen('session', (event) => render(event.payload));
 listen('ended', (event) => {
   forget();
   setup(event.payload);
 });
 
-setup();
+setup().then(() => invoke('handed')).then(handed);

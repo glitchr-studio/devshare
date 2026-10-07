@@ -39,6 +39,16 @@
       <p id="error" class="error" role="alert"></p>
     </form>
 
+    <section class="join">
+      <h2>Join a session</h2>
+      <form id="join-form">
+        <input id="join-invitation" type="text" placeholder="Paste an invitation: its link or its code" spellcheck="false" autocomplete="off">
+        <button id="join" type="submit">Join</button>
+      </form>
+      <p id="handed" class="muted" hidden>A link handed this invitation over. Join only if you know who sent it: while you are in the session, this computer's traffic to its names goes to its host.</p>
+      <p id="join-error" class="error" role="alert"></p>
+    </section>
+
     <section class="add">
       <h2>Add a project</h2>
       <form id="add">
@@ -98,6 +108,20 @@
           <ul id="notices" class="notices"></ul>
         </section>
       </div>
+    </div>
+  </main>
+
+  <main id="joined" hidden>
+    <header class="bar">
+      <h1>Joined <span id="joined-names"></span></h1>
+      <span class="countdown"><span id="joined-remaining"></span> left</span>
+      <button id="leave" type="button">Leave</button>
+    </header>
+
+    <div class="joined">
+      <p id="joined-route" class="muted"></p>
+      <div id="joined-environments"></div>
+      <p class="muted">These names work in every program of this computer for as long as the session lasts, and go with it. Your own projects keep their addresses.</p>
     </div>
   </main>
 

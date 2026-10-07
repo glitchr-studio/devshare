@@ -326,6 +326,8 @@ h1 { font-size: 1.15rem; margin: 0 0 1.5rem; }
 code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.92em; word-break: break-all; }
 p { margin: 0 0 1rem; }
 .muted { opacity: 0.65; }
+.button { padding: 0.3rem 0.9rem; border: 1px solid; border-radius: 6px; color: inherit; text-decoration: none; display: inline-block; }
+[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -336,10 +338,21 @@ p { margin: 0 0 1rem; }
 
 const PAGE_INVITED: &str = r#"<h1>You are invited to a DevShare session</h1>
 <p class="code">{code}</p>
+<p id="app-line" hidden><a id="app" class="button">Open in the DevShare app</a></p>
 <p>On a computer with DevShare, join with this page's address:</p>
 <p><code id="command">devshare join {code}</code></p>
 <p class="muted">DevShare for iPhone, iPad and Android is not available yet: this session can be joined from a computer only.</p>
-<script>document.getElementById('command').textContent = 'devshare join ' + location.href;</script>"#;
+<script>
+document.getElementById('command').textContent = 'devshare join ' + location.href;
+// The desktop app takes the invitation from a link of its own scheme and
+// asks before joining. Phones and tablets have no app yet.
+const phone = /iPhone|iPad|iPod|Android/.test(navigator.userAgent)
+  || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
+if (!phone) {
+  document.getElementById('app').href = 'devshare://open?link=' + encodeURIComponent(location.href);
+  document.getElementById('app-line').hidden = false;
+}
+</script>"#;
 
 const PAGE_SLOW_DOWN: &str = r#"<h1>Too many requests</h1>
 <p>This address asked for too many pages in a short time. Try again in a minute.</p>"#;

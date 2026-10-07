@@ -12,5 +12,31 @@ fn main() {
         .with_writer(std::io::stderr)
         .init();
 
-    commands::create(tauri::Builder::default()).run(commands::on_event);
+    let builder = tauri::Builder::default();
+    // A second launch, by a link on Linux or Windows, hands its link to the
+    // running app and ends.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(
+        |app, _arguments, _folder| {
+            use tauri::Manager;
+            if let Some(window) = app.get_webview_window("main") {
+                window.set_focus().ok();
+            }
+        },
+    ));
+    let builder = builder.plugin(tauri_plugin_deep_link::init()).setup(|app| {
+        use tauri_plugin_deep_link::DeepLinkExt;
+        // Registered at each start where the system allows it: an app
+        // run from its build folder has no installer to do it.
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        app.deep_link().register_all().ok();
+        let handle = app.handle().clone();
+        app.deep_link()
+            .on_open_url(move |event| commands::hand_over(&handle, event.urls()));
+        if let Ok(Some(links)) = app.deep_link().get_current() {
+            commands::hand_over(app.handle(), links);
+        }
+        Ok(())
+    });
+    commands::create(builder).run(commands::on_event);
 }

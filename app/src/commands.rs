@@ -12,13 +12,42 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, Runtime, State};
 
 use crate::{
+    joined::{JoinUpdate, Joined},
     projects::Projects,
     session::{Session, Update},
 };
 
+/// The scheme the invitation pages hand an invitation to the app with:
+/// `devshare://open?link=<the invitation, URL-encoded>`.
+pub const SCHEME: &str = "devshare";
+
+/// The longest invitation taken from a link: a few times the longest one.
+const LONGEST_INVITATION: usize = 2048;
+
 /// The session in progress, if any.
 #[derive(Default)]
 struct Sharing(Mutex<Option<Session>>);
+
+/// The session this computer joined, if any.
+#[derive(Default)]
+struct Joining(Mutex<Option<Joined>>);
+
+/// An invitation handed over by a link before the window asked for it.
+#[derive(Default)]
+struct Handed(Mutex<Option<String>>);
+
+/// The invitation in a `devshare://open?link=…` link, if it is one.
+pub fn invitation_of(link: &url::Url) -> Option<String> {
+    if link.scheme() != SCHEME {
+        return None;
+    }
+    let (_, invitation) = link.query_pairs().find(|(key, _)| key == "link")?;
+    let invitation = invitation.trim();
+    let fine = !invitation.is_empty()
+        && invitation.len() <= LONGEST_INVITATION
+        && !invitation.chars().any(char::is_control);
+    fine.then(|| invitation.to_string())
+}
 
 impl Sharing {
     fn current(&self) -> Option<Session> {
@@ -201,6 +230,69 @@ async fn share<R: Runtime>(
     Ok(())
 }
 
+/// Joins a session with its invitation. The window is told about it through
+/// the `joined` and `left` events.
+#[tauri::command]
+async fn join<R: Runtime>(
+    app: AppHandle<R>,
+    joining: State<'_, Joining>,
+    invitation: String,
+) -> Result<(), String> {
+    if joining.0.lock().unwrap().is_some() {
+        return Err("this computer is already in a session: leave it first".into());
+    }
+    let window = app.clone();
+    let joined = Joined::start(
+        invitation.trim(),
+        std::env::var("DEVSHARE_SERVER").ok(),
+        move |update| match update {
+            JoinUpdate::Joined(view) => {
+                window.emit("joined", view).ok();
+            }
+            JoinUpdate::Left(reason) => {
+                window.state::<Joining>().0.lock().unwrap().take();
+                window.emit("left", reason).ok();
+            }
+        },
+    )
+    .await
+    .map_err(|error| format!("{error:#}"))?;
+    *joining.0.lock().unwrap() = Some(joined);
+    Ok(())
+}
+
+#[tauri::command]
+async fn leave(joining: State<'_, Joining>) -> Result<(), String> {
+    let joined = joining.0.lock().unwrap().clone();
+    if let Some(joined) = joined {
+        joined.leave().await;
+    }
+    Ok(())
+}
+
+/// Opens one of the joined session's addresses in the system's browser.
+/// Nothing else: the window cannot open whatever a host sent.
+#[tauri::command]
+fn open(joining: State<'_, Joining>, url: String) -> Result<(), String> {
+    let allowed = joining
+        .0
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|joined| joined.may_open(&url));
+    if !allowed {
+        return Err("not an address of the session".into());
+    }
+    tauri_plugin_opener::open_url(&url, None::<&str>).map_err(|error| error.to_string())
+}
+
+/// The invitation a link handed over before the window was there to hear
+/// it, once.
+#[tauri::command]
+fn handed(handed: State<'_, Handed>) -> Option<String> {
+    handed.0.lock().unwrap().take()
+}
+
 #[tauri::command]
 async fn disconnect(sharing: State<'_, Sharing>, guest: u32) -> Result<bool, String> {
     match sharing.current() {
@@ -230,6 +322,8 @@ async fn stop(sharing: State<'_, Sharing>) -> Result<(), String> {
 pub fn create<R: Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
     builder
         .manage(Sharing::default())
+        .manage(Joining::default())
+        .manage(Handed::default())
         .invoke_handler(tauri::generate_handler![
             declared,
             add_project,
@@ -237,18 +331,76 @@ pub fn create<R: Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
             share,
             disconnect,
             invite,
-            stop
+            stop,
+            join,
+            leave,
+            open,
+            handed
         ])
         .build(tauri::generate_context!())
         .expect("the DevShare window could not be created")
 }
 
+/// An invitation handed over by a link: shown in the window, which asks
+/// before joining. A page must never be able to make this computer join a
+/// session on its own.
+pub fn hand_over<R: Runtime>(app: &AppHandle<R>, links: Vec<url::Url>) {
+    let Some(invitation) = links.iter().find_map(invitation_of) else {
+        return;
+    };
+    *app.state::<Handed>().0.lock().unwrap() = Some(invitation.clone());
+    app.emit("invitation", invitation).ok();
+    if let Some(window) = app.get_webview_window("main") {
+        window.unminimize().ok();
+        window.set_focus().ok();
+    }
+}
+
 /// Quitting the app ends the session: guests are told before the process
-/// goes, not left to notice a dead link.
+/// goes, not left to notice a dead link. A joined session is left.
 pub fn on_event<R: Runtime>(app: &AppHandle<R>, event: RunEvent) {
     if let RunEvent::Exit = event {
         if let Some(session) = app.state::<Sharing>().current() {
             tauri::async_runtime::block_on(session.stop());
         }
+        let joined = app.state::<Joining>().0.lock().unwrap().clone();
+        if let Some(joined) = joined {
+            tauri::async_runtime::block_on(joined.leave());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read(link: &str) -> Option<String> {
+        invitation_of(&url::Url::parse(link).unwrap())
+    }
+
+    #[test]
+    fn an_invitation_comes_out_of_its_link_as_it_went_in() {
+        let page = "https://join.glitchr.dev/#gVOxtm5P6ALN7P-x_y";
+        let encoded: String = url::form_urlencoded::byte_serialize(page.as_bytes()).collect();
+        assert_eq!(
+            read(&format!("devshare://open?link={encoded}")).as_deref(),
+            Some(page)
+        );
+        assert_eq!(
+            read("devshare://open?link=7GX2-KLM9").as_deref(),
+            Some("7GX2-KLM9")
+        );
+    }
+
+    #[test]
+    fn a_link_without_an_invitation_hands_nothing_over() {
+        assert_eq!(read("devshare://open"), None);
+        assert_eq!(read("devshare://open?link="), None);
+        assert_eq!(read("devshare://open?link=7GX2%0A-KLM9"), None);
+        assert_eq!(
+            read(&format!("devshare://open?link={}", "a".repeat(3000))),
+            None
+        );
+        assert_eq!(read("https://join.glitchr.dev/?link=7GX2-KLM9"), None);
     }
 }

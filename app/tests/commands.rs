@@ -257,3 +257,64 @@ fn the_window_shares_sees_a_login_and_disconnects_it() {
 
     std::fs::remove_dir_all(&folder).ok();
 }
+
+#[test]
+fn the_window_cannot_open_addresses_outside_a_joined_session_and_a_bad_invitation_is_said() {
+    let app = commands::create(mock_builder());
+    let window = WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .unwrap();
+
+    let refused = ask(&window, "open", json!({ "url": "https://glitchr.dev" })).unwrap_err();
+    assert!(refused
+        .as_str()
+        .unwrap()
+        .contains("not an address of the session"));
+    // Nothing handed over by a link yet.
+    assert_eq!(ask(&window, "handed", json!({})).unwrap(), Value::Null);
+    // Leaving when in no session is no error.
+    assert!(ask(&window, "leave", json!({})).is_ok());
+
+    // Not an invitation: refused, whatever this computer's rights.
+    let error = ask(
+        &window,
+        "join",
+        json!({ "invitation": "not an invitation" }),
+    )
+    .unwrap_err();
+    assert!(!error.as_str().unwrap().is_empty());
+}
+
+#[test]
+fn a_link_hands_its_invitation_to_the_window_which_joins_nothing_by_itself() {
+    let app = commands::create(mock_builder());
+    let window = WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .unwrap();
+    let (heard, events) = channel();
+    window.listen("invitation", move |event| {
+        heard.send(event.payload().to_string()).ok();
+    });
+
+    let page = "https://join.glitchr.dev/#gVOxtm5P6ALN7P-x_yQk3";
+    let link = format!("devshare://open?link={}", page.replace('#', "%23"));
+    commands::hand_over(
+        app.handle(),
+        vec![
+            "https://elsewhere.example/".parse().unwrap(),
+            link.parse().unwrap(),
+        ],
+    );
+
+    let said = events.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(serde_json::from_str::<String>(&said).unwrap(), page);
+    // Kept for a window that was not there yet, once.
+    assert_eq!(ask(&window, "handed", json!({})).unwrap(), json!(page));
+    assert_eq!(ask(&window, "handed", json!({})).unwrap(), Value::Null);
+    // Shown, not joined: nothing is open to leave, no address to open.
+    let refused = ask(&window, "open", json!({ "url": "https://shop.test" })).unwrap_err();
+    assert!(refused
+        .as_str()
+        .unwrap()
+        .contains("not an address of the session"));
+}

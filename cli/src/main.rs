@@ -16,11 +16,7 @@ use devshare_core::{
     invite::DeviceSecret,
     link::Route,
     probe::Probe,
-    protocol::{
-        clean, code,
-        helper::{records, TRUSTED_CAS},
-        Manifest, Service,
-    },
+    protocol::{clean, code, Service},
     qr,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -472,21 +468,11 @@ async fn join(server: Option<String>, invitation: &str, trust_names: bool) -> Re
         domains: vec![settings.domain()],
         trust_all: trust_names,
     };
-    let termination = termination(&settings, &link.manifest);
-    let certified = |service: &Service| {
-        service.tls.is_some()
-            && termination
-                .as_ref()
-                .is_some_and(|tls| tls.covers(&service.host))
-    };
-    let certified: Vec<Service> = link
-        .manifest
-        .environments
-        .values()
-        .flat_map(|environment| &environment.services)
-        .filter(|service| certified(service))
-        .cloned()
-        .collect();
+    let termination = Termination::for_session(&link.manifest, &settings.domain());
+    let certified: Vec<Service> = termination
+        .as_ref()
+        .map(|tls| tls.certified(&link.manifest).into_iter().cloned().collect())
+        .unwrap_or_default();
     let tunnel = match Tunnel::start(link.opener(), &link.manifest, &names, termination).await {
         Ok(tunnel) => tunnel,
         Err(error) => {
@@ -548,36 +534,6 @@ async fn join(server: Option<String>, invitation: &str, trust_names: bool) -> Re
     Ok(())
 }
 
-/// TLS terminated on this device, when it has its own certificate authority
-/// and this computer trusts it: programs then accept the services' names
-/// without a warning. Otherwise connections pass through untouched.
-fn termination(settings: &Settings, manifest: &Manifest) -> Option<Termination> {
-    let ca = match DeviceCa::load(&[settings.domain()]) {
-        Ok(Some(ca)) => ca,
-        Ok(None) => return None,
-        Err(error) => {
-            tracing::warn!("{error:#}");
-            return None;
-        }
-    };
-    if !trusted(&ca) {
-        return None;
-    }
-    let until = std::time::SystemTime::now() + Duration::from_secs(manifest.session.expires_in);
-    match ca.minter(&manifest.hostnames(), until) {
-        Ok(minter) => Some(Termination::new(minter)),
-        Err(error) => {
-            tracing::warn!("no certificates for this session: {error:#}");
-            None
-        }
-    }
-}
-
-/// Whether the helper recorded that this computer trusts `ca`.
-fn trusted(ca: &DeviceCa) -> bool {
-    std::fs::read_to_string(TRUSTED_CAS).is_ok_and(|record| records(&record, ca.sha256()))
-}
-
 fn ca(action: CaAction) -> Result<()> {
     let settings = Settings::load()?;
     let domains = [settings.domain()];
@@ -605,7 +561,7 @@ fn ca(action: CaAction) -> Result<()> {
             println!("  for       {}", ca.domains().join(", "));
             println!("  expires   in {} days", (ca.not_after() - now) / 86_400);
             println!("  file      {}", DeviceCa::certificate_path()?.display());
-            if trusted(&ca) {
+            if ca.trusted() {
                 println!(
                     "  trusted   yes: sessions' https:// services are certified by this device"
                 );
@@ -645,7 +601,7 @@ fn ca(action: CaAction) -> Result<()> {
             // that fails leaves a working authority behind.
             helper.trust_ca(new.certificate_pem())?;
             new.save()?;
-            if let Some(old) = old.filter(trusted) {
+            if let Some(old) = old.filter(DeviceCa::trusted) {
                 helper.untrust_ca(old.sha256())?;
             }
             println!(
@@ -658,7 +614,7 @@ fn ca(action: CaAction) -> Result<()> {
                 println!("This device has no certificate authority of its own.");
                 return Ok(());
             };
-            if trusted(&ca) {
+            if ca.trusted() {
                 helper()?.untrust_ca(ca.sha256())?;
             }
             DeviceCa::delete()?;

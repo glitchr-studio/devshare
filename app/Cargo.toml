@@ -27,8 +27,14 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tauri = { version = "2", features = [] }
+tauri-plugin-deep-link = "2"
+tauri-plugin-opener = "2"
+url = "2"
 
 [dev-dependencies]
 rqrr = "0.11"
 resvg = "0.48"
 tauri = { version = "2", features = ["test"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
