@@ -31,10 +31,14 @@ covered by automated tests, but:
 - the invitation scheme has not had a security review;
 - there is no iPhone, Android or Windows client yet: a phone that opens an
   invitation gets a page saying so;
-- joining a session needs administrator rights (`sudo`);
 - by default, sessions go through the public relays of the
   [iroh](https://github.com/n0-computer/iroh) project;
-- no licence has been chosen yet, so all rights are reserved for now.
+- joining a session needs administrator rights (`sudo`) until the privileged
+  helper ships.
+
+## Licence
+
+GNU General Public License, version 3 or later: see [LICENSE](LICENSE).
 
 ## How it works
 

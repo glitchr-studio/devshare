@@ -120,8 +120,13 @@ pub async fn answers_at(address: std::net::SocketAddr) -> bool {
 
 /// Makes sure a control plane answers at `server` when `server` names this
 /// machine: if nothing listens there, one is started inside this process,
-/// reachable from the network, and lives as long as the process does.
+/// on the loopback interface only, and lives as long as the process does.
 /// Returns whether one was started.
+///
+/// Loopback only: on a shared network anyone nearby could otherwise query
+/// it. The invitation link and the QR code need no control plane at all, so
+/// nothing is lost for guests; the short code typed by hand is for the day
+/// a public control plane exists.
 ///
 /// A control plane somewhere else is not this function's business, and
 /// neither is a port something already listens on.
@@ -133,8 +138,7 @@ pub async fn ensure_local(server: &str) -> std::io::Result<bool> {
     if tokio::net::TcpStream::connect(here).await.is_ok() {
         return Ok(false);
     }
-    let everywhere = std::net::SocketAddr::from(([0, 0, 0, 0], port));
-    let listener = tokio::net::TcpListener::bind(everywhere).await?;
+    let listener = tokio::net::TcpListener::bind(here).await?;
     tokio::spawn(serve(listener));
     Ok(true)
 }

@@ -3,6 +3,7 @@ name = "devshare-app"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "Share local development environments for a few minutes"
 
 [lib]

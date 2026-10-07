@@ -3,6 +3,7 @@ name = "devshare-cli"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "Share local development environments for a few minutes"
 
 [[bin]]
@@ -25,6 +26,7 @@ libc = "0.2"
 name = "devshare"
 maintainer = "Marco Meyer <37673095+meiyasan@users.noreply.github.com>"
 copyright = "2026, Marco Meyer"
+license-file = ["../LICENSE", "0"]
 section = "net"
 priority = "optional"
 # Set by hand: the binaries are linked against glibc 2.28 whatever the build

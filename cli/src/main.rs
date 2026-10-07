@@ -314,8 +314,7 @@ async fn share(
     if !share.works_from_anywhere() {
         println!("No relay is in use: this invitation only works on this network.\n");
     } else if on_this_machine {
-        println!("The link and the QR code work from any network. The code alone is");
-        println!("for someone on this network.\n");
+        println!("The link and the QR code work from any network.\n");
     }
     println!(
         "Expires in {}. Up to {max_guests} guest{}. Ctrl-C stops sharing.",

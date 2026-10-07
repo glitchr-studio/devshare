@@ -85,6 +85,7 @@ fi
 echo $! >"$work/share.pid"
 until_true 20 grep -q '^Code:' "$work/share.log" || { cat "$work/share.log"; echo "sharing did not start"; exit 1; }
 code=$(grep -A1 '^Code:' "$work/share.log" | tail -1)
+link=$(grep -A1 '^Invitation:' "$work/share.log" | tail -1)
 expect "one environment, three services" "showcase.test:8712" cat "$work/share.log"
 refuse "no warning: every service answered when sharing started" grep -q '^!' "$work/share.log"
 
@@ -97,7 +98,9 @@ docker run -d --name devshare-showcase-guest --cap-add NET_ADMIN --device /dev/n
     -e DEVSHARE_SERVER=http://host.docker.internal:8787 \
     -v devshare-target:/opt/devshare:ro devshare-guest sleep infinity >/dev/null
 refuse "the guest does not know showcase.test" guest getent hosts showcase.test
-docker exec -d devshare-showcase-guest sh -c "/opt/devshare/debug/devshare join '$code' >/tmp/join.log 2>&1"
+# With the link: the control plane of this session answers on this machine
+# only, so the code alone would be no use to a guest.
+docker exec -d devshare-showcase-guest sh -c "/opt/devshare/debug/devshare join '$link' >/tmp/join.log 2>&1"
 until_true 30 guest grep -q '^Connected' /tmp/join.log || { guest cat /tmp/join.log; echo "the guest could not join"; exit 1; }
 expect "the guest joined" "guest 1 joined" cat "$work/share.log"
 

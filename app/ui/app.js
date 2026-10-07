@@ -186,7 +186,7 @@ function render(session) {
   $('invitation').hidden = !session.invitation_open;
   $('reach').hidden = !session.invitation_open;
   $('reach').textContent = session.anywhere
-    ? 'The link and the QR code work from any network. The code alone is for someone on this network.'
+    ? 'The link and the QR code work from any network.'
     : 'No relay is in use: this invitation only works on this network.';
   $('withdrawn').hidden = session.invitation_open;
   if (invitationChanged) {

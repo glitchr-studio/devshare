@@ -85,7 +85,8 @@ impl Settings {
 # relay = \"https://relay.example\"
 
 # The public page invitation links and QR codes point at, so that they open
-# from any network. Set it to \"\" to have them point at this machine instead.
+# from any network. Set it to \"\" to have them point at the control plane
+# instead; the one a session starts itself answers on this machine only.
 # join = \"https://join.glitchr.dev\"
 ";
 
