@@ -3,4 +3,5 @@
 FROM debian:bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl dnsutils iproute2 openssl procps python3 python3-pil zbar-tools \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --create-home --shell /bin/sh guest

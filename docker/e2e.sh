@@ -4,14 +4,17 @@
 #
 #   docker/e2e.sh            host and guest on one network: a direct link
 #   docker/e2e.sh relayed    on two networks that cannot reach each other
+#   docker/e2e.sh helper     the guest as an ordinary user, with the helper
 #   KEEP=1 docker/e2e.sh     leaves the containers up for a look around
 #   PROFILE=release ...      runs the optimized binaries (make release first)
 set -uo pipefail
 cd "$(dirname "$0")"
 
-route=${1:-direct}
+mode=${1:-direct}
+route=$mode
 files=(-f compose.yml)
-[[ $route == relayed ]] && files+=(-f relayed.yml)
+[[ $mode == relayed ]] && files+=(-f relayed.yml)
+[[ $mode == helper ]] && { files+=(-f helper.yml); route=direct; }
 
 compose() { docker compose "${files[@]}" "$@"; }
 host() { compose exec -T host "$@"; }
@@ -60,9 +63,17 @@ join() {
     local alone=""
     [[ ${2:-} == alone ]] && alone="env -u DEVSHARE_SERVER"
     # With the tunnel's own log: it counts the connections it holds open.
-    compose exec -d guest sh -c "RUST_LOG=off,devshare=warn,devshare_core=debug $alone devshare join '$1' >/tmp/join.log 2>&1"
+    if [[ $mode == helper ]]; then
+        compose exec -d guest su -s /bin/sh guest -c "env $(environment) RUST_LOG=off,devshare=warn,devshare_core=debug $alone devshare join '$1' >/tmp/join.log 2>&1"
+    else
+        compose exec -d guest sh -c "RUST_LOG=off,devshare=warn,devshare_core=debug $alone devshare join '$1' >/tmp/join.log 2>&1"
+    fi
     until_true 20 guest grep -q '^Connected' /tmp/join.log
 }
+
+# The container's DevShare settings and PATH, to hand to a command run as
+# the ordinary user `guest`: su would drop them.
+environment() { guest sh -c 'env | grep -E "^(DEVSHARE_|PATH=)" | tr "\n" " "'; }
 
 finish() {
     [[ ${KEEP:-} ]] || compose down -v --remove-orphans >/dev/null 2>&1
@@ -79,15 +90,32 @@ code=$(host sh -c "grep -A1 '^Code:' /shared/share.log | tail -1")
 expect "the host shows a code" "-" echo "$code"
 refuse "the guest does not know shop.test" guest getent hosts shop.test
 
+if [[ $mode == helper ]]; then
+    echo
+    echo "The helper"
+    until_true 10 guest grep -q 'listening on' /tmp/helper.log
+    expect "runs as root, listening for guests" "listening on /run/devshare/helper.sock" guest cat /tmp/helper.log
+    expect "another user is not served" "does not accept this user" guest su -s /bin/sh nobody -c "env $(environment) devshare join '$code' 2>&1 || true"
+fi
+
 echo
 echo "A guest that is killed"
 join "$code" || { guest cat /tmp/join.log; echo "the guest could not join"; exit 1; }
 expect "the guest joined" "guest 1 joined" host cat /shared/share.log
+if [[ $mode == helper ]]; then
+    expect "the guest's process runs as the ordinary user" "guest" guest sh -c 'ps -o user= -C devshare | head -1'
+    expect "a second session for the same user is refused" "one at a time" guest su -s /bin/sh guest -c "env $(environment) devshare join '$code' 2>&1 || true"
+fi
 guest pkill -KILL -x devshare
 # No goodbye from a killed process: the host waits for the link to time out.
 until_true 25 host grep -q 'guest 1 left' /shared/share.log
 expect "the host sees it leave" "guest 1 left" host cat /shared/share.log
 refuse "its interface is gone" guest sh -c "ip -o -4 addr | grep -q 198.18.90.1"
+if [[ $mode == helper ]]; then
+    until_true 10 guest sh -c '! grep -q devshare /etc/hosts'
+    refuse "and the helper removed its names at once" guest grep -q devshare /etc/hosts
+    expect "the helper says so" "session down" guest cat /tmp/helper.log
+fi
 
 echo
 echo "Joining with the QR code"
@@ -170,12 +198,14 @@ printf '  · peak memory of the guest process: %s MiB\n' "$((peak / 1024))"
 echo
 echo "A guest that is revoked"
 host sh -c 'echo guests >/shared/commands'
-until_true 5 host grep -q '  guest 2: .*(linux)' /shared/share.log
+until_true 5 host grep -q '^  guest [0-9]*: .*(linux)' /shared/share.log
 expect "the host lists its guests" "(linux), $route" host cat /shared/share.log
-host sh -c 'echo "revoke 2" >/shared/commands'
+# The guest's number: attempts the helper turned away have taken some.
+number=$(host sh -c "grep -oE '^  guest [0-9]+:' /shared/share.log | tail -1 | grep -oE '[0-9]+'")
+host sh -c "echo 'revoke $number' >/shared/commands"
 until_true 10 guest grep -q '^Session over' /tmp/join.log
 expect "the guest is told why" "Session over: the host revoked this device." guest cat /tmp/join.log
-expect "the host confirms" "Guest 2 revoked" host cat /shared/share.log
+expect "the host confirms" "Guest $number revoked" host cat /shared/share.log
 until_true 5 guest sh -c "! pgrep -x devshare"
 refuse "the guest process is gone" guest pgrep -x devshare
 refuse "the interface is gone" guest sh -c "ip -o -4 addr | grep -q 198.18.90.1"

@@ -7,23 +7,26 @@
 
 mod addresses;
 mod dns;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+mod helper;
 mod link;
-mod names;
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 mod system;
 mod tunnel;
 
 pub use addresses::AddressPlan;
+pub use devshare_protocol::names::{is_hostname, NamePolicy, DEV_DOMAINS};
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+pub use helper::Helper;
 pub use link::{End, GuestLink, JoinError, OpenError, Opener};
-pub use names::{NamePolicy, DEV_DOMAINS};
 pub use tunnel::Tunnel;
 
 use devshare_protocol::Device;
 
 /// This computer, as a host will see it in its list of guests.
 pub fn this_device() -> Device {
-    // Joining needs administrator rights for now: the login that matters is
-    // the one that asked for them, not root.
+    // A guest without the privileged helper joins with sudo: the login that
+    // matters is the one that asked for administrator rights, not root.
     let user = ["SUDO_USER", "USER", "LOGNAME", "USERNAME"]
         .iter()
         .filter_map(|name| std::env::var(name).ok())

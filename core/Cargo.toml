@@ -31,6 +31,7 @@ sha2 = "0.11"
 # netdev 0.46 (through iroh) needs there: without this pin the core does not
 # build for iOS. Remove once either crate is fixed.
 libc = "=0.2.189"
+nix = { version = "0.31", features = ["socket", "uio", "fs", "user"] }
 
 [dev-dependencies]
 rqrr = "0.11"

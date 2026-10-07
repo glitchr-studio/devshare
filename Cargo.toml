@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["protocol", "core", "cli", "server", "app"]
+members = ["protocol", "core", "cli", "server", "helper", "app"]
 # The desktop app needs a system web view to build: it is left out of what
 # the Docker targets compile and built natively (make app).
-default-members = ["protocol", "core", "cli", "server"]
+default-members = ["protocol", "core", "cli", "server", "helper"]
 
 [workspace.package]
 version = "0.1.0"

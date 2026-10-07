@@ -1,0 +1,9 @@
+# Laid over compose.yml by `docker/e2e.sh helper`: the guest's machine runs
+# the privileged helper as root, and the guest joins as an ordinary user.
+services:
+  guest:
+    command: >
+      sh -c "mkdir -p /etc/devshare
+      && id -u guest > /etc/devshare/users
+      && (devshare-helper run >/tmp/helper.log 2>&1 &)
+      && exec sleep infinity"

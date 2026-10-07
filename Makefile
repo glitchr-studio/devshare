@@ -32,11 +32,12 @@ test tests:
 
 # A host sharing its services with a guest that has only the code: once on
 # one network, once on two networks joined by nothing but our own relay.
-# Then a guest that cannot reach the host nor any control plane, only a
-# relay, and joins with the invitation that carries the host's address.
+# Then the guest as an ordinary user with the privileged helper, and a guest
+# that cannot reach the host nor any control plane, only a relay.
 e2e: build relay
 	docker/e2e.sh
 	docker/e2e.sh relayed
+	docker/e2e.sh helper
 	docker/remote.sh
 
 # dist/: a .deb and a tarball for amd64 and arm64.
@@ -66,7 +67,7 @@ macos:
 # (make macos) is picked up at once. `source env.sh` puts bin/ on the PATH.
 install: macos
 	mkdir -p bin
-	for command in devshare devshare-server devshare-app; do \
+	for command in devshare devshare-server devshare-helper devshare-app; do \
 		ln -sf "../target-macos/debug/$$command" "bin/$$command"; \
 	done
 	@echo "The commands are in bin/. Put them on your PATH with: source $(CURDIR)/env.sh"

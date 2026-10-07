@@ -1,5 +1,6 @@
 //! Types shared by every DevShare component: the session manifest, the
-//! messages exchanged between a guest and a host, and the control-plane API.
+//! messages exchanged between a guest and a host, the control-plane API, and
+//! what a guest and the privileged helper say to each other.
 //!
 //! PROVISIONAL: the invitation scheme below (a short code that is both the
 //! lookup key on the control plane and the bearer secret presented to the
@@ -10,6 +11,10 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 pub mod code;
+pub mod helper;
+pub mod names;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod system_dns;
 
 /// Version of the guest/host wire protocol.
 pub const PROTOCOL_VERSION: u32 = 1;

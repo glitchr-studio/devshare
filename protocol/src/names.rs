@@ -4,8 +4,12 @@
 //! joined. A host that named `accounts.google.com` would therefore receive
 //! the guest's traffic for it: the names a session may use are the ones that
 //! never exist on the internet, unless the guest says otherwise.
+//!
+//! Here rather than in the guest's code because the privileged helper, which
+//! installs those names for a guest without administrator rights, applies the
+//! same rules on its own.
 
-use devshare_protocol::Manifest;
+use crate::Manifest;
 
 /// Domains reserved for local and test use, which no public name ends with.
 pub const DEV_DOMAINS: &[&str] = &[
@@ -16,6 +20,20 @@ pub const DEV_DOMAINS: &[&str] = &[
     "internal",
     "home.arpa",
 ];
+
+/// Letters, digits and hyphens in labels of 1 to 63, up to 253 in all.
+pub fn is_hostname(name: &str) -> bool {
+    let label = |label: &str| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    };
+    !name.is_empty() && name.len() <= 253 && name.split('.').all(label)
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct NamePolicy {
@@ -34,7 +52,10 @@ impl NamePolicy {
         }
     }
 
-    fn accepts(&self, name: &str) -> bool {
+    pub fn accepts(&self, name: &str) -> bool {
+        if !is_hostname(name) {
+            return false;
+        }
         if self.trust_all {
             return true;
         }
@@ -58,17 +79,40 @@ impl NamePolicy {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
-    use crate::guest::addresses::tests::manifest;
+    use crate::{Environment, SessionInfo};
+
+    fn manifest(names: &[&str]) -> Manifest {
+        Manifest {
+            protocol: 1,
+            manifest_version: 1,
+            session: SessionInfo {
+                id: "s".into(),
+                lifetime: 300,
+                expires_in: 300,
+                max_guests: 3,
+            },
+            environments: BTreeMap::from([(
+                "shop".to_string(),
+                Environment {
+                    entrypoint: None,
+                    dns: names.iter().map(|name| name.to_string()).collect(),
+                    services: Vec::new(),
+                },
+            )]),
+        }
+    }
 
     #[test]
     fn only_names_that_cannot_exist_on_the_internet_pass_by_default() {
         let session = manifest(&[
-            ("shop.test", 443),
-            ("docs.localhost", 80),
-            ("accounts.google.com", 443),
-            ("shop.lan", 80),
-            ("test.example.com", 80),
+            "shop.test",
+            "docs.localhost",
+            "accounts.google.com",
+            "shop.lan",
+            "test.example.com",
         ]);
         let refused = NamePolicy::default().refused(&session);
         assert_eq!(
@@ -83,7 +127,7 @@ mod tests {
             ["accounts.google.com", "test.example.com"]
         );
         assert_eq!(
-            NamePolicy::with(Some("com".into())).refused(&manifest(&[("evil.xcom", 80)])),
+            NamePolicy::with(Some("com".into())).refused(&manifest(&["evil.xcom"])),
             ["evil.xcom"]
         );
         assert!(NamePolicy {
@@ -92,5 +136,22 @@ mod tests {
         }
         .refused(&session)
         .is_empty());
+    }
+
+    #[test]
+    fn a_hostname_is_made_of_labels_and_nothing_else() {
+        for bad in [
+            "../../etc/x",
+            "shop test",
+            "shop.test;rm",
+            "-shop.test",
+            "",
+            "a..b",
+            "Shop.test",
+            &"a".repeat(64),
+        ] {
+            assert!(!is_hostname(bad), "{bad:?}");
+        }
+        assert!(is_hostname("api-v2.shop.test"));
     }
 }

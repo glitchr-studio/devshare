@@ -16,10 +16,12 @@ use tokio::{io::AsyncWriteExt, task::JoinSet};
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 use tun::AbstractDevice;
 
-#[cfg(not(any(target_os = "ios", target_os = "android")))]
-use super::system::SystemDns;
 use super::{dns, AddressPlan, NamePolicy, OpenError, Opener};
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+use super::{helper::Helper, system::SystemDns};
 use crate::link;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+use std::os::fd::IntoRawFd;
 
 const MTU: u16 = 1500;
 const DNS_PORT: u16 = 53;
@@ -41,6 +43,10 @@ pub struct Tunnel {
     _tasks: JoinSet<()>,
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
     _system: Option<SystemDns>,
+    /// The connection to the privileged helper when it made the interface:
+    /// the names stay installed as long as it is open.
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    _helper: Option<Helper>,
 }
 
 impl Tunnel {
@@ -50,6 +56,27 @@ impl Tunnel {
     pub async fn start(opener: Opener, manifest: &Manifest, names: &NamePolicy) -> Result<Self> {
         refuse_unexpected_names(manifest, names)?;
         let plan = Arc::new(AddressPlan::new(manifest)?);
+        let root = nix::unistd::geteuid().is_root();
+
+        // Without administrator rights, the helper makes the interface and
+        // hands it over; this process does the rest.
+        if !root {
+            if let Some(mut helper) = Helper::connect()? {
+                let (descriptor, interface) = helper.up(&plan)?;
+                let mut config = tun::Configuration::default();
+                config.raw_fd(descriptor.into_raw_fd()).mtu(MTU);
+                let device = tun::create_as_async(&config)
+                    .context("attaching to the interface the helper made")?;
+                let tasks = serve(device, opener, plan.clone())?;
+                return Ok(Self {
+                    plan,
+                    interface: Some(interface),
+                    _tasks: tasks,
+                    _system: None,
+                    _helper: Some(helper),
+                });
+            }
+        }
 
         let mut config = tun::Configuration::default();
         config
@@ -66,8 +93,11 @@ impl Tunnel {
             platform.ensure_root_privileges(true);
         });
 
-        let device = tun::create_as_async(&config)
-            .context("creating the network interface (administrator rights are required)")?;
+        let device = match tun::create_as_async(&config) {
+            Ok(device) => device,
+            Err(error) if !root => return Err(super::helper::without_rights(error.into())),
+            Err(error) => return Err(error).context("creating the network interface"),
+        };
         let interface = device.tun_name().context("reading the interface name")?;
 
         let tasks = serve(device, opener, plan.clone())?;
@@ -78,6 +108,7 @@ impl Tunnel {
             interface: Some(interface),
             _tasks: tasks,
             _system: Some(system),
+            _helper: None,
         })
     }
 
@@ -109,6 +140,8 @@ impl Tunnel {
             _tasks: tasks,
             #[cfg(not(any(target_os = "ios", target_os = "android")))]
             _system: None,
+            #[cfg(not(any(target_os = "ios", target_os = "android")))]
+            _helper: None,
         })
     }
 

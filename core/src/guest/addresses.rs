@@ -4,7 +4,7 @@
 use std::{collections::HashMap, net::Ipv4Addr};
 
 use anyhow::{bail, Result};
-use devshare_protocol::{normalize_host, Manifest};
+use devshare_protocol::{names::is_hostname, normalize_host, Manifest};
 
 /// `198.18.90.0/24`: the tunnel's own address, the resolver, then the names.
 /// Inside the block reserved for network testing (RFC 2544), which is never
@@ -98,20 +98,6 @@ impl AddressPlan {
             .get(name)
             .is_some_and(|ports| ports.contains(&port))
     }
-}
-
-/// Letters, digits and hyphens in labels of 1 to 63, up to 253 in all.
-pub fn is_hostname(name: &str) -> bool {
-    let label = |label: &str| {
-        !label.is_empty()
-            && label.len() <= 63
-            && !label.starts_with('-')
-            && !label.ends_with('-')
-            && label
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-    };
-    !name.is_empty() && name.len() <= 253 && name.split('.').all(label)
 }
 
 const fn address(last: u8) -> Ipv4Addr {

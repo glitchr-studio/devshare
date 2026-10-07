@@ -1207,6 +1207,7 @@ dependencies = [
  "iroh",
  "libc",
  "netstack-smoltcp",
+ "nix",
  "qrcode",
  "rand 0.9.5",
  "rcgen",
@@ -1222,6 +1223,20 @@ dependencies = [
  "tokio-rustls",
  "toml 0.8.23",
  "tracing",
+ "tun",
+]
+
+[[package]]
+name = "devshare-helper"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "devshare-protocol",
+ "nix",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
  "tun",
 ]
 
@@ -3577,6 +3592,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+ "memoffset",
 ]
 
 [[package]]

@@ -33,8 +33,8 @@ covered by automated tests, but:
   invitation gets a page saying so;
 - by default, sessions go through the public relays of the
   [iroh](https://github.com/n0-computer/iroh) project;
-- joining a session needs administrator rights (`sudo`) until the privileged
-  helper ships.
+- joining a session needs either the helper below, installed once with
+  `sudo`, or `sudo devshare join`.
 
 ## Licence
 
@@ -78,6 +78,23 @@ sudo devshare join <invitation>
 
 then open `http://showcase.test:8710`.
 
+## Joining without sudo
+
+A guest's computer needs administrator rights for one thing: creating the
+session's network interface and pointing the system's resolver at it. The
+helper does that and nothing else, hands the interface to your own process,
+and removes the names when your process ends, however it ends:
+
+```sh
+sudo devshare-helper install     # once; serves the user who runs it
+devshare join <invitation>       # from then on, no sudo
+```
+
+It runs at boot, listens on a Unix socket, and serves only the users recorded
+at installation (`sudo devshare-helper install --user <name>` adds one). It
+refuses names outside the test domains unless root lists a domain in
+`/etc/devshare/trusted-domains`. `sudo devshare-helper uninstall` removes it.
+
 ## Commands
 
 | Command | What it does |
@@ -86,6 +103,7 @@ then open `http://showcase.test:8710`.
 | `devshare join <invitation>` | Joins a session with its link, its QR code's text or its short code. |
 | `devshare discover [folder]` | Writes or refreshes the folder's `devshare.toml` from its compose file. |
 | `devshare settings` | Shows the general settings, common to all projects (`~/.config/devshare/devshare.toml`). |
+| `devshare-helper` | `install`, `uninstall`, `run`: the part that needs root on a guest's computer, see above. |
 | `devshare-server` | A control plane to run on its own. Not needed for local use: `share` starts one when none is running. |
 
 ## Layout
