@@ -4,12 +4,13 @@
 
 use std::{
     collections::HashMap,
+    net::{IpAddr, SocketAddr},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use axum::{
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Path, State},
     http::{header::AUTHORIZATION, HeaderMap, StatusCode},
     routing::{get, post},
     Json, Router,
@@ -20,6 +21,22 @@ use devshare_protocol::{code, CreateInvitation, InvitationCreated, InvitationLoo
 const MAX_TTL: u64 = 24 * 60 * 60;
 const MAX_INVITATIONS: usize = 100_000;
 const MAX_BODY: usize = 16 * 1024;
+/// A host's address is a key and a few relays or sockets: anything bigger
+/// is not one.
+const MAX_HOST: usize = 2048;
+
+/// What one address may ask, so that codes cannot be guessed at speed and
+/// the registry cannot be filled: a bucket per address, refilled one token a
+/// second. A lookup or a page costs one, an invitation six.
+const BURST: f64 = 60.0;
+const REFILL_PER_SECOND: f64 = 1.0;
+const COST_LOOKUP: f64 = 1.0;
+const COST_CREATE: f64 = 6.0;
+
+struct Bucket {
+    tokens: f64,
+    at: Instant,
+}
 
 struct Invitation {
     host: serde_json::Value,
@@ -30,6 +47,7 @@ struct Invitation {
 #[derive(Clone, Default)]
 pub struct Registry {
     invitations: Arc<Mutex<HashMap<String, Invitation>>>,
+    buckets: Arc<Mutex<HashMap<IpAddr, Bucket>>>,
 }
 
 impl Registry {
@@ -39,7 +57,40 @@ impl Registry {
             .lock()
             .unwrap()
             .retain(|_, invitation| invitation.expires > now);
+        self.buckets
+            .lock()
+            .unwrap()
+            .retain(|_, bucket| now.duration_since(bucket.at) < Duration::from_secs(3600));
     }
+
+    /// Whether `from` may spend `cost` now. This machine itself always may:
+    /// it is the host's own process, or the server's.
+    fn allow(&self, from: IpAddr, cost: f64) -> bool {
+        if from.is_loopback() {
+            return true;
+        }
+        let now = Instant::now();
+        let mut buckets = self.buckets.lock().unwrap();
+        let bucket = buckets.entry(from).or_insert(Bucket {
+            tokens: BURST,
+            at: now,
+        });
+        let refilled =
+            bucket.tokens + now.duration_since(bucket.at).as_secs_f64() * REFILL_PER_SECOND;
+        bucket.tokens = refilled.min(BURST);
+        bucket.at = now;
+        if bucket.tokens >= cost {
+            bucket.tokens -= cost;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Equal without saying, by how long it took, where they differ.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// What `GET /v1` answers: how a control plane is told from anything else
@@ -134,10 +185,17 @@ pub async fn serve(listener: tokio::net::TcpListener) -> std::io::Result<()> {
 
 async fn create(
     State(registry): State<Registry>,
+    ConnectInfo(from): ConnectInfo<SocketAddr>,
     Json(request): Json<CreateInvitation>,
 ) -> Result<Json<InvitationCreated>, StatusCode> {
+    if !registry.allow(from.ip(), COST_CREATE) {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
     if request.ttl == 0 {
         return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    if request.host.to_string().len() > MAX_HOST {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }
     let ttl = request.ttl.min(MAX_TTL);
     let owner_token: String = rand::random::<[u8; 32]>()
@@ -173,8 +231,12 @@ async fn create(
 
 async fn lookup(
     State(registry): State<Registry>,
+    ConnectInfo(from): ConnectInfo<SocketAddr>,
     Path(code): Path<String>,
 ) -> Result<Json<InvitationLookup>, StatusCode> {
+    if !registry.allow(from.ip(), COST_LOOKUP) {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
     let invitations = registry.invitations.lock().unwrap();
     match invitations.get(&code) {
         Some(invitation) if invitation.expires > Instant::now() => Ok(Json(InvitationLookup {
@@ -188,9 +250,15 @@ async fn lookup(
 /// scanned the QR code for instance: the code, and what to do with it.
 async fn page(
     State(registry): State<Registry>,
-    axum::extract::ConnectInfo(from): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    ConnectInfo(from): ConnectInfo<SocketAddr>,
     Path(asked): Path<String>,
 ) -> (StatusCode, axum::response::Html<String>) {
+    if !registry.allow(from.ip(), COST_LOOKUP) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            axum::response::Html(PAGE.replace("{body}", PAGE_SLOW_DOWN)),
+        );
+    }
     // Said to whoever runs this: the one sign that a device which scanned
     // the QR code did reach this machine.
     tracing::info!("the invitation page was opened from {}", from.ip());
@@ -241,21 +309,30 @@ const PAGE_INVITED: &str = r#"<h1>You are invited to a DevShare session</h1>
 <p class="muted">DevShare for iPhone, iPad and Android is not available yet: this session can be joined from a computer only.</p>
 <script>document.getElementById('command').textContent = 'devshare join ' + location.href;</script>"#;
 
+const PAGE_SLOW_DOWN: &str = r#"<h1>Too many requests</h1>
+<p>This address asked for too many pages in a short time. Try again in a minute.</p>"#;
+
 const PAGE_GONE: &str = r#"<h1>This invitation is no longer valid</h1>
 <p>It expired, was withdrawn, or was mistyped. Ask whoever shared it for a new one.</p>"#;
 
 async fn withdraw(
     State(registry): State<Registry>,
+    ConnectInfo(from): ConnectInfo<SocketAddr>,
     Path(code): Path<String>,
     headers: HeaderMap,
 ) -> StatusCode {
+    if !registry.allow(from.ip(), COST_LOOKUP) {
+        return StatusCode::TOO_MANY_REQUESTS;
+    }
     let presented = headers
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "));
     let mut invitations = registry.invitations.lock().unwrap();
     match (invitations.get(&code), presented) {
-        (Some(invitation), Some(token)) if invitation.owner_token == token => {
+        (Some(invitation), Some(token))
+            if constant_time_eq(invitation.owner_token.as_bytes(), token.as_bytes()) =>
+        {
             invitations.remove(&code);
             StatusCode::NO_CONTENT
         }
@@ -266,7 +343,29 @@ async fn withdraw(
 
 #[cfg(test)]
 mod tests {
-    use super::local_port;
+    use super::{local_port, Registry, BURST, COST_CREATE, COST_LOOKUP};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn an_address_gets_a_burst_then_one_token_a_second_and_loopback_is_free() {
+        let registry = Registry::default();
+        let far = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7));
+        let allowed = (0..200)
+            .filter(|_| registry.allow(far, COST_LOOKUP))
+            .count();
+        assert_eq!(allowed as f64, BURST);
+        assert!(!registry.allow(far, COST_LOOKUP));
+        // Another address has its own bucket; creating costs more.
+        let other = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 8));
+        let creates = (0..100)
+            .filter(|_| registry.allow(other, COST_CREATE))
+            .count();
+        assert_eq!(creates as f64, (BURST / COST_CREATE).floor());
+        for _ in 0..500 {
+            assert!(registry.allow(IpAddr::V4(Ipv4Addr::LOCALHOST), COST_CREATE));
+            assert!(registry.allow(IpAddr::V6(Ipv6Addr::LOCALHOST), COST_LOOKUP));
+        }
+    }
 
     #[test]
     fn only_this_machine_is_local() {

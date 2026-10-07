@@ -8,12 +8,14 @@
 mod addresses;
 mod dns;
 mod link;
+mod names;
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 mod system;
 mod tunnel;
 
 pub use addresses::AddressPlan;
 pub use link::{End, GuestLink, JoinError, OpenError, Opener};
+pub use names::{NamePolicy, DEV_DOMAINS};
 pub use tunnel::Tunnel;
 
 use devshare_protocol::Device;

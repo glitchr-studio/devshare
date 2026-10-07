@@ -461,10 +461,11 @@ async fn one_link_serves_a_guest_on_this_network_and_one_that_is_not() {
     far.close().await;
 
     // When the address in the link leads nowhere from where the guest is,
-    // the control plane the link names is asked instead.
-    let nowhere = iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[9; 32]).public())
-        .with_ip_addr("127.0.0.1:9".parse().unwrap());
-    let stale = format!("{}/{code}#{}", session.server, direct::for_link(&nowhere));
+    // the control plane the link names is asked for a fresh one: it must
+    // name the same host, the one the link says.
+    let (named, _) = direct::decode(&link).unwrap().unwrap();
+    let moved = iroh::EndpointAddr::new(named.id).with_ip_addr("127.0.0.1:9".parse().unwrap());
+    let stale = format!("{}/{code}#{}", session.server, direct::for_link(&moved));
     let through = GuestLink::join(&stale, &session.server, device("through"))
         .await
         .unwrap();
@@ -476,7 +477,18 @@ async fn one_link_serves_a_guest_on_this_network_and_one_that_is_not() {
     );
     through.close().await;
 
-    // Without any control plane to ask, that same link has nowhere to go.
+    // A control plane that names another host than the link does is not
+    // believed, even with the right code: that is how a hostile one would
+    // put itself in the middle.
+    let other = iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[9; 32]).public())
+        .with_ip_addr("127.0.0.1:9".parse().unwrap());
+    let forged = format!("{}/{code}#{}", session.server, direct::for_link(&other));
+    assert!(matches!(
+        GuestLink::join(&forged, &session.server, device("misled")).await,
+        Err(JoinError::Failed(_))
+    ));
+
+    // Without any control plane to ask, a stale link has nowhere to go.
     assert!(matches!(
         GuestLink::join(&stale, "http://127.0.0.1:1", device("lost")).await,
         Err(JoinError::Failed(_))
@@ -541,4 +553,62 @@ async fn with_a_public_invitation_page_the_link_points_there_and_still_says_ever
         .await
         .is_err());
     share.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn after_too_many_wrong_codes_the_invitation_closes_until_a_new_one() {
+    let mut session = session(Duration::from_secs(60), 3).await;
+    let link = session.share.link();
+    let code = session.share.code();
+    // The same host, another code: what someone who kept an old link and
+    // guesses the new code sends.
+    let wrong = |n: u32| {
+        let guess = format!("{n:08}").replace('0', "2").replace('1', "3");
+        link.replace(
+            &format!("/{}-{}", &code[..4], &code[4..]),
+            &format!("/{guess}"),
+        )
+    };
+    assert_ne!(wrong(1), link);
+
+    for n in 1..20 {
+        assert!(matches!(
+            GuestLink::join(&wrong(n), &session.server, device("guesser")).await,
+            Err(JoinError::Rejected(RejectReason::InvalidInvitation))
+        ));
+        assert!(matches!(
+            next(&mut session.share).await,
+            Activity::Refused { .. }
+        ));
+    }
+    // The twentieth wrong code closes the door...
+    assert!(
+        GuestLink::join(&wrong(20), &session.server, device("guesser"))
+            .await
+            .is_err()
+    );
+    assert!(matches!(
+        next(&mut session.share).await,
+        Activity::Locked { attempts: 20 }
+    ));
+    assert!(matches!(
+        next(&mut session.share).await,
+        Activity::Refused { .. }
+    ));
+    assert!(!session.share.invitation_open());
+    // ...to the right code too.
+    assert!(matches!(
+        GuestLink::join(&link, &session.server, device("late")).await,
+        Err(JoinError::Rejected(RejectReason::InvalidInvitation))
+    ));
+    next(&mut session.share).await;
+
+    // A new invitation opens it again, and starts the count over.
+    session.share.invite().await.unwrap();
+    assert!(session.share.invitation_open());
+    let guest = GuestLink::join(&session.share.link(), &session.server, device("welcome"))
+        .await
+        .unwrap();
+    guest.close().await;
+    session.share.stop().await;
 }

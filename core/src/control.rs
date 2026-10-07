@@ -14,7 +14,28 @@ fn client() -> Result<reqwest::Client> {
         .build()?)
 }
 
+/// Said once per process: a code sent over plain HTTP to another machine can
+/// be read on the way, and whoever reads it can join.
+fn warn_if_in_clear(server: &str) {
+    static SAID: std::sync::Once = std::sync::Once::new();
+    let Some(rest) = server.strip_prefix("http://") else {
+        return;
+    };
+    let host = rest.split(['/', ':']).next().unwrap_or_default();
+    let host = host.trim_matches(['[', ']']);
+    if matches!(host, "localhost" | "127.0.0.1" | "::1") {
+        return;
+    }
+    SAID.call_once(|| {
+        tracing::warn!(
+            "{server} is reached over plain HTTP: anyone on the way can read the invitation \
+             code and join. Use https for a control plane on another machine."
+        );
+    });
+}
+
 fn url(server: &str, path: &str) -> String {
+    warn_if_in_clear(server);
     format!("{}{path}", server.trim_end_matches('/'))
 }
 

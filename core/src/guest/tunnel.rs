@@ -18,7 +18,7 @@ use tun::AbstractDevice;
 
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 use super::system::SystemDns;
-use super::{dns, AddressPlan, OpenError, Opener};
+use super::{dns, AddressPlan, NamePolicy, OpenError, Opener};
 use crate::link;
 
 const MTU: u16 = 1500;
@@ -47,7 +47,8 @@ impl Tunnel {
     /// Desktop: creates the interface and points the system's resolver at it
     /// for the shared names. Needs the privilege to create an interface.
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
-    pub async fn start(opener: Opener, manifest: &Manifest) -> Result<Self> {
+    pub async fn start(opener: Opener, manifest: &Manifest, names: &NamePolicy) -> Result<Self> {
+        refuse_unexpected_names(manifest, names)?;
         let plan = Arc::new(AddressPlan::new(manifest)?);
 
         let mut config = tun::Configuration::default();
@@ -90,8 +91,10 @@ impl Tunnel {
     pub fn attach(
         opener: Opener,
         manifest: &Manifest,
+        names: &NamePolicy,
         descriptor: std::os::fd::RawFd,
     ) -> Result<Self> {
+        refuse_unexpected_names(manifest, names)?;
         let plan = Arc::new(AddressPlan::new(manifest)?);
 
         let mut config = tun::Configuration::default();
@@ -117,6 +120,26 @@ impl Tunnel {
     pub fn interface(&self) -> Option<&str> {
         self.interface.as_deref()
     }
+}
+
+/// A session that names what could be a real site is not joined: the guest
+/// would send that site's traffic to the host. See [`NamePolicy`].
+fn refuse_unexpected_names(manifest: &Manifest, names: &NamePolicy) -> Result<()> {
+    let refused = names.refused(manifest);
+    if refused.is_empty() {
+        return Ok(());
+    }
+    let shown: Vec<String> = refused
+        .iter()
+        .map(|name| crate::protocol::clean(name, 80))
+        .collect();
+    anyhow::bail!(
+        "not joined: the session names {}, which could be a real site, and the guest would \
+         send its traffic for it to the host. Sessions are expected to use names under {}. \
+         To join anyway: devshare join --trust-names",
+        shown.join(", "),
+        crate::guest::DEV_DOMAINS.join(", ")
+    )
 }
 
 /// Runs a TCP/IP stack in this process on the packets of the interface:

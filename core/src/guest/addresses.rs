@@ -6,8 +6,10 @@ use std::{collections::HashMap, net::Ipv4Addr};
 use anyhow::{bail, Result};
 use devshare_protocol::{normalize_host, Manifest};
 
-/// `100.90.0.0/24`: the tunnel's own address, the resolver, then the names.
-const NETWORK: [u8; 3] = [100, 90, 0];
+/// `198.18.90.0/24`: the tunnel's own address, the resolver, then the names.
+/// Inside the block reserved for network testing (RFC 2544), which is never
+/// routed on the internet; not inside the one Tailscale gives its devices.
+const NETWORK: [u8; 3] = [198, 18, 90];
 const FIRST_NAME: u8 = 10;
 const LAST_NAME: u8 = 250;
 
@@ -22,6 +24,15 @@ pub struct AddressPlan {
 impl AddressPlan {
     pub fn new(manifest: &Manifest) -> Result<Self> {
         let hostnames = manifest.hostnames();
+        // Names end up in files and on the command line of this machine:
+        // only what a hostname may be made of is accepted, whatever a host
+        // sends.
+        if let Some(name) = hostnames.iter().find(|name| !is_hostname(name)) {
+            bail!(
+                "the session names \"{}\", which is not a hostname",
+                crate::protocol::clean(name, 80)
+            );
+        }
         if hostnames.len() > (LAST_NAME - FIRST_NAME) as usize + 1 {
             bail!(
                 "the session shares {} hostnames, more than a guest can map",
@@ -89,6 +100,20 @@ impl AddressPlan {
     }
 }
 
+/// Letters, digits and hyphens in labels of 1 to 63, up to 253 in all.
+pub fn is_hostname(name: &str) -> bool {
+    let label = |label: &str| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    };
+    !name.is_empty() && name.len() <= 253 && name.split('.').all(label)
+}
+
 const fn address(last: u8) -> Ipv4Addr {
     Ipv4Addr::new(NETWORK[0], NETWORK[1], NETWORK[2], last)
 }
@@ -133,6 +158,25 @@ pub(crate) mod tests {
                 },
             )]),
         }
+    }
+
+    #[test]
+    fn what_is_not_a_hostname_is_refused_before_it_reaches_the_system() {
+        for bad in [
+            "../../etc/x",
+            "shop test",
+            "shop.test;rm",
+            "-shop.test",
+            "",
+            "a..b",
+        ] {
+            assert!(!is_hostname(bad), "{bad:?}");
+            assert!(
+                AddressPlan::new(&manifest(&[(bad, 80)])).is_err(),
+                "{bad:?}"
+            );
+        }
+        assert!(is_hostname("api-v2.shop.test"));
     }
 
     #[test]

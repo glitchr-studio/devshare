@@ -215,8 +215,8 @@ mod tests {
 
         for original in ["127.0.0.1\tlocalhost\n", "127.0.0.1 localhost", ""] {
             let shared = with_block(original, &plan);
-            assert!(shared.contains("100.90.0.11\tshop.test\n"), "{shared}");
-            assert!(shared.contains("100.90.0.10\tapi.shop.test\n"), "{shared}");
+            assert!(shared.contains("198.18.90.11\tshop.test\n"), "{shared}");
+            assert!(shared.contains("198.18.90.10\tapi.shop.test\n"), "{shared}");
 
             // A second session replaces the block of the first.
             assert_eq!(with_block(&shared, &plan), shared);

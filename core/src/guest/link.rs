@@ -119,9 +119,11 @@ impl GuestLink {
     /// or when the address in it leads nowhere from here.
     pub async fn join(invitation: &str, server: &str, device: Device) -> Result<Self, JoinError> {
         let code = code::parse(invitation);
+        let mut named: Option<iroh::EndpointId> = None;
         match direct::decode(invitation) {
             Some(Err(())) => return Err(JoinError::Malformed),
             Some(Ok((host, carried))) => {
+                named = Some(host.id);
                 // With a control plane to fall back on, do not wait as long.
                 let patience = if code.is_some() {
                     DIRECT_TIMEOUT
@@ -142,6 +144,13 @@ impl GuestLink {
         let host = control::lookup(server, &code)
             .await?
             .ok_or(JoinError::NotFound)?;
+        // The link said who the host is; the control plane does not get to
+        // say otherwise, whatever it answers.
+        if named.is_some_and(|id| id != host.id) {
+            return Err(JoinError::Failed(anyhow!(
+                "the control plane names another host than the invitation does"
+            )));
+        }
         Self::connect(host, code, device, JOIN_TIMEOUT).await
     }
 

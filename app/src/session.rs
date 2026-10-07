@@ -195,6 +195,10 @@ async fn run(
                 Some(Activity::Refused { reason }) => {
                     journal.add(true, format!("A device was refused: {reason}."));
                 }
+                Some(Activity::Locked { attempts }) => journal.add(
+                    true,
+                    format!("{attempts} wrong codes in a row: the invitation is withdrawn. Issue a new one to let others in."),
+                ),
                 Some(Activity::Denied { guest, host, port }) => journal.add(
                     true,
                     format!("{} asked for {host}:{port}, which is not shared.", journal.name(guest)),

@@ -104,6 +104,56 @@ impl Manifest {
     }
 }
 
+/// Text that came from the other side, made safe to print or display:
+/// without control characters (which could redraw a terminal or hide what
+/// follows), bidirectional overrides, or more than `most` characters.
+pub fn clean(text: &str, most: usize) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // A whole escape sequence goes, not just its first byte: `ESC [`
+            // up to a final letter, `ESC ]` up to BEL or `ESC \`, else one
+            // character.
+            match chars.next() {
+                Some('[') => {
+                    for c in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\u{7}' || (c == '\u{1b}' && chars.peek() == Some(&'\\')) {
+                            chars.next_if_eq(&'\\');
+                            break;
+                        }
+                    }
+                }
+                // `ESC` then intermediates (`(`, `#`, …) then one final byte.
+                Some(c) if ('\u{20}'..='\u{2f}').contains(&c) => {
+                    while chars
+                        .next_if(|c| ('\u{20}'..='\u{2f}').contains(c))
+                        .is_some()
+                    {}
+                    chars.next();
+                }
+                _ => {}
+            }
+            continue;
+        }
+        if c.is_control() || matches!(c, '\u{2028}'..='\u{202E}' | '\u{2066}'..='\u{2069}') {
+            continue;
+        }
+        if out.chars().count() >= most {
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Hostnames are compared lowercased and without a trailing dot.
 pub fn normalize_host(host: &str) -> String {
     host.trim().trim_end_matches('.').to_ascii_lowercase()
@@ -134,6 +184,15 @@ pub struct Device {
 }
 
 impl Device {
+    /// The same device, as it may be shown: see [`clean`].
+    pub fn cleaned(&self) -> Self {
+        Self {
+            name: clean(&self.name, 64),
+            platform: clean(&self.platform, 32),
+            user: self.user.as_deref().map(|user| clean(user, 64)),
+        }
+    }
+
     /// `alice on Alices-MacBook`, or the computer's name alone.
     pub fn label(&self) -> String {
         match &self.user {
@@ -240,4 +299,23 @@ pub struct InvitationCreated {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvitationLookup {
     pub host: serde_json::Value,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_the_other_side_says_cannot_redraw_a_terminal() {
+        assert_eq!(clean("a\x1b[2J\x07b\r\nc\u{202e}d", 10), "abcd");
+        assert_eq!(clean("x\x1b]0;title\x1b\\y\x1b(Bz\x1b", 10), "xyz");
+        assert_eq!(clean("é漢字 ok", 10), "é漢字 ok");
+        assert_eq!(clean(&"x".repeat(100), 8), "xxxxxxxx");
+        let device = Device {
+            name: "evil\x1b]0;owned\x07".into(),
+            platform: "linux".into(),
+            user: Some("\u{2066}alice".into()),
+        };
+        assert_eq!(device.cleaned().label(), "alice on evil");
+    }
 }

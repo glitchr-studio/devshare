@@ -14,7 +14,7 @@ use devshare_core::{
     host::{Activity, Share, ShareOptions},
     link::Route,
     probe::Probe,
-    protocol::{code, Service},
+    protocol::{clean, code, Service},
     qr,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -84,7 +84,14 @@ enum Command {
         init: bool,
     },
     /// Join a session with its code or link.
-    Join { invitation: String },
+    Join {
+        invitation: String,
+        /// Accept a session that names hosts outside the test domains
+        /// (.test, .localhost, …): your traffic for those names will go to
+        /// the host for the whole session.
+        #[arg(long)]
+        trust_names: bool,
+    },
     /// List the declared environments.
     Environments {
         #[arg(long, env = "DEVSHARE_CONFIG")]
@@ -136,7 +143,10 @@ async fn main() {
             force,
         } => discover(directory, host, print, force),
         Command::Settings { init } => settings(init),
-        Command::Join { invitation } => join(cli.server, &invitation).await,
+        Command::Join {
+            invitation,
+            trust_names,
+        } => join(cli.server, &invitation, trust_names).await,
         Command::Environments { config } => list(config),
     };
     if let Err(error) = outcome {
@@ -349,6 +359,10 @@ async fn share(
                 }
                 Some(Activity::GuestLeft { id }) => println!("○ guest {id} left"),
                 Some(Activity::Refused { reason }) => println!("✗ a device was refused: {reason}"),
+                Some(Activity::Locked { attempts }) => {
+                    println!("✗ {attempts} wrong codes in a row: the invitation is withdrawn.");
+                    println!("  Nobody else can join until you type \"invite\" for a new one.");
+                }
                 Some(Activity::Denied { guest, host, port }) => {
                     println!("✗ guest {guest} asked for {host}:{port}, which is not shared");
                 }
@@ -410,7 +424,7 @@ async fn command(share: &Share, line: &str) {
     }
 }
 
-async fn join(server: Option<String>, invitation: &str) -> Result<()> {
+async fn join(server: Option<String>, invitation: &str, trust_names: bool) -> Result<()> {
     // What was asked for, else the control plane the link itself names,
     // else the one of the general settings.
     let settings = Settings::load()?;
@@ -419,7 +433,11 @@ async fn join(server: Option<String>, invitation: &str) -> Result<()> {
     let server = environment::server(server, None, &settings);
     let mut link = GuestLink::join(invitation, &server, guest::this_device()).await?;
 
-    let tunnel = match Tunnel::start(link.opener(), &link.manifest).await {
+    let names = guest::NamePolicy {
+        domains: vec![settings.domain()],
+        trust_all: trust_names,
+    };
+    let tunnel = match Tunnel::start(link.opener(), &link.manifest, &names).await {
         Ok(tunnel) => tunnel,
         Err(error) => {
             link.close().await;
@@ -430,8 +448,8 @@ async fn join(server: Option<String>, invitation: &str) -> Result<()> {
     println!("Connected.\n");
     for (name, environment) in &link.manifest.environments {
         match &environment.entrypoint {
-            Some(entrypoint) => println!("  {name}: {entrypoint}"),
-            None => println!("  {name}"),
+            Some(entrypoint) => println!("  {}: {}", clean(name, 64), clean(entrypoint, 200)),
+            None => println!("  {}", clean(name, 64)),
         }
         for service in &environment.services {
             println!("    {}", describe(service));

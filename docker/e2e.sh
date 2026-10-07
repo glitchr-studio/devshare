@@ -87,7 +87,7 @@ guest pkill -KILL -x devshare
 # No goodbye from a killed process: the host waits for the link to time out.
 until_true 25 host grep -q 'guest 1 left' /shared/share.log
 expect "the host sees it leave" "guest 1 left" host cat /shared/share.log
-refuse "its interface is gone" guest sh -c "ip -o -4 addr | grep -q 100.90.0.1"
+refuse "its interface is gone" guest sh -c "ip -o -4 addr | grep -q 198.18.90.1"
 
 echo
 echo "Joining with the QR code"
@@ -105,12 +105,12 @@ until_true 10 host grep -q 'guest 2: ' /shared/share.log
 expect "the host says so too" "guest 2: $route" host cat /shared/share.log
 refuse "the unshared environment is not listed" guest grep -q grafana /tmp/join.log
 expect "one block of names, the stale one replaced" "1" guest grep -c '>>> devshare' /etc/hosts
-expect "the interface is up" "100.90.0.1" guest ip -o -4 addr
+expect "the interface is up" "198.18.90.1" guest ip -o -4 addr
 
 echo
 echo "Names"
-expect "the tunnel's resolver knows shop.test" "100.90.0." guest dig +short +time=2 +tries=1 @100.90.0.2 shop.test
-expect "it knows nothing else" "NXDOMAIN" guest dig +time=2 +tries=1 @100.90.0.2 grafana.test
+expect "the tunnel's resolver knows shop.test" "198.18.90." guest dig +short +time=2 +tries=1 @198.18.90.2 shop.test
+expect "it knows nothing else" "NXDOMAIN" guest dig +time=2 +tries=1 @198.18.90.2 grafana.test
 expect "the guest's own names still resolve" "control" guest sh -c "getent hosts control && echo control"
 
 echo
@@ -143,8 +143,8 @@ expect "refused at once, not after the program's own timeout" "at once" guest sh
     start=$(date +%s%N)
     curl -s -m 5 http://shop.test:5432/
     [ $((($(date +%s%N) - start) / 1000000)) -lt 1000 ] && echo "at once"'
-refuse "an unshared port by address" guest sh -c 'curl -fsS -m 5 "http://$(dig +short @100.90.0.2 shop.test):3000/"'
-refuse "an address of the session that maps to no name" guest curl -fsS -m 5 http://100.90.0.200/
+refuse "an unshared port by address" guest sh -c 'curl -fsS -m 5 "http://$(dig +short @198.18.90.2 shop.test):3000/"'
+refuse "an address of the session that maps to no name" guest curl -fsS -m 5 http://198.18.90.200/
 refuse "the host's services by its own address" guest sh -c 'curl -fsS -m 5 "http://$(getent hosts host | cut -d" " -f1)/"'
 
 echo
@@ -178,7 +178,7 @@ expect "the guest is told why" "Session over: the host revoked this device." gue
 expect "the host confirms" "Guest 2 revoked" host cat /shared/share.log
 until_true 5 guest sh -c "! pgrep -x devshare"
 refuse "the guest process is gone" guest pgrep -x devshare
-refuse "the interface is gone" guest sh -c "ip -o -4 addr | grep -q 100.90.0.1"
+refuse "the interface is gone" guest sh -c "ip -o -4 addr | grep -q 198.18.90.1"
 refuse "the names are gone from the hosts file" guest grep -q devshare /etc/hosts
 refuse "shop.test no longer resolves" guest getent hosts shop.test
 expect "its code lets nobody in any more" "no session for this invitation" guest sh -c "devshare join '$code' 2>&1 || true"

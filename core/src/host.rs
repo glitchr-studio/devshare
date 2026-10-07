@@ -48,12 +48,34 @@ pub struct ShareOptions {
 /// What happens during a session, for whoever displays it.
 #[derive(Debug, Clone)]
 pub enum Activity {
-    GuestJoined { id: u32, device: Device },
-    GuestLeft { id: u32 },
-    Refused { reason: RejectReason },
-    Denied { guest: u32, host: String, port: u16 },
-    Unreachable { guest: u32, host: String, port: u16 },
-    Ended { reason: EndReason },
+    GuestJoined {
+        id: u32,
+        device: Device,
+    },
+    GuestLeft {
+        id: u32,
+    },
+    Refused {
+        reason: RejectReason,
+    },
+    /// Too many wrong codes: the invitation was withdrawn. A new one opens
+    /// the session again.
+    Locked {
+        attempts: u32,
+    },
+    Denied {
+        guest: u32,
+        host: String,
+        port: u16,
+    },
+    Unreachable {
+        guest: u32,
+        host: String,
+        port: u16,
+    },
+    Ended {
+        reason: EndReason,
+    },
 }
 
 /// What the host found when it looked at a service it is about to share.
@@ -140,9 +162,15 @@ struct Guest {
     end: mpsc::Sender<EndReason>,
 }
 
+/// Wrong codes a session takes before it stops listening to any: enough for
+/// a few typos, not for guessing. A new invitation starts the count over.
+const MAX_WRONG_CODES: u32 = 20;
+
 struct State {
     guests: HashMap<u32, Guest>,
     next_id: u32,
+    /// Wrong codes presented since the invitation was issued.
+    wrong_codes: u32,
     /// The invitation in force, and what lets the host withdraw it.
     code: String,
     owner_token: String,
@@ -191,6 +219,7 @@ impl Share {
             state: Mutex::new(State {
                 guests: HashMap::new(),
                 next_id: 1,
+                wrong_codes: 0,
                 code: invitation.code,
                 owner_token: invitation.owner_token,
                 invitation_open: true,
@@ -285,6 +314,7 @@ impl Share {
         let (old_code, old_token) = {
             let mut state = self.shared.state.lock().unwrap();
             state.invitation_open = true;
+            state.wrong_codes = 0;
             (
                 std::mem::replace(&mut state.code, invitation.code.clone()),
                 std::mem::replace(&mut state.owner_token, invitation.owner_token),
@@ -416,9 +446,20 @@ impl Shared {
         if state.ended.is_some() {
             return Err(RejectReason::SessionEnded);
         }
+        if !state.invitation_open {
+            return Err(RejectReason::InvalidInvitation);
+        }
         let presented = code::parse(&hello.invitation).unwrap_or_default();
-        if !state.invitation_open || !constant_time_eq(presented.as_bytes(), state.code.as_bytes())
-        {
+        if !constant_time_eq(presented.as_bytes(), state.code.as_bytes()) {
+            state.wrong_codes += 1;
+            if state.wrong_codes >= MAX_WRONG_CODES {
+                state.invitation_open = false;
+                self.activity
+                    .send(Activity::Locked {
+                        attempts: state.wrong_codes,
+                    })
+                    .ok();
+            }
             return Err(RejectReason::InvalidInvitation);
         }
         if state.guests.len() >= self.max_guests as usize {
@@ -462,6 +503,11 @@ async fn serve_guest(incoming: Incoming, shared: Arc<Shared>) -> Result<()> {
     })
     .await
     .map_err(|_| anyhow!("no hello from the guest"))??;
+    // What the guest says of itself is shown to the host: made safe to show.
+    let hello = Hello {
+        device: hello.device.cleaned(),
+        ..hello
+    };
 
     let (id, mut end) = match shared.admit(&hello, &connection) {
         Ok(admitted) => admitted,
