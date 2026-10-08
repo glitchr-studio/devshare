@@ -296,12 +296,18 @@ impl DeviceCa {
         fs::create_dir_all(&folder)?;
         let path = folder.join(format!("ca-{:.16}.pem", self.sha256()));
         fs::write(&path, &self.pem)?;
+        // Into the login keychain as well: without `-k`, only the trust
+        // setting is written, and a root the system cannot find in a
+        // keychain vouches for nothing (sites never send their root).
+        let keychain = login_keychain()?;
         let added = security(&[
             "add-trusted-cert",
             "-r",
             "trustRoot",
             "-p",
             "ssl",
+            "-k",
+            &keychain,
             &path.to_string_lossy(),
         ]);
         fs::remove_file(&path).ok();
@@ -318,7 +324,8 @@ impl DeviceCa {
         fs::remove_file(&path).ok();
         // Its trust may have been removed by hand already: what matters is
         // that the certificate goes too.
-        let deleted = security(&["delete-certificate", "-Z", self.sha256()]);
+        let keychain = login_keychain()?;
+        let deleted = security(&["delete-certificate", "-Z", self.sha256(), &keychain]);
         removed.or(deleted)
     }
 
@@ -381,6 +388,23 @@ impl Minter {
         self.minted.lock().unwrap().insert(name, leaf.clone());
         Ok(leaf)
     }
+}
+
+/// The user's login keychain, as `security login-keychain` names it.
+#[cfg(target_os = "macos")]
+fn login_keychain() -> Result<String> {
+    let output = std::process::Command::new("security")
+        .arg("login-keychain")
+        .output()
+        .context("running security")?;
+    let named = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .trim_matches('"')
+        .to_string();
+    if named.is_empty() {
+        bail!("this user has no login keychain");
+    }
+    Ok(named)
 }
 
 #[cfg(target_os = "macos")]
