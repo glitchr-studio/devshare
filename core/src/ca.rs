@@ -263,10 +263,63 @@ impl DeviceCa {
         })
     }
 
-    /// Whether the helper recorded that this computer trusts it.
+    /// Whether this computer trusts it: on macOS, the user's own trust
+    /// settings; elsewhere, the helper's record.
     pub fn trusted(&self) -> bool {
-        std::fs::read_to_string(devshare_protocol::helper::TRUSTED_CAS)
-            .is_ok_and(|record| devshare_protocol::helper::records(&record, self.sha256()))
+        #[cfg(target_os = "macos")]
+        {
+            // `Cert 3: DevShare <device> <tag>`: the tag makes the name unique.
+            let listed = std::process::Command::new("security")
+                .arg("dump-trust-settings")
+                .output()
+                .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+                .unwrap_or_default();
+            let wanted = format!(": {}", self.common_name());
+            listed
+                .lines()
+                .any(|line| line.starts_with("Cert ") && line.ends_with(&wanted))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            std::fs::read_to_string(devshare_protocol::helper::TRUSTED_CAS)
+                .is_ok_and(|record| devshare_protocol::helper::records(&record, self.sha256()))
+        }
+    }
+
+    /// macOS: makes the user trust it, for SSL only, in their login
+    /// keychain. The system asks them for their password, once: a
+    /// background service cannot change trust settings, the system refuses
+    /// without someone to ask, which is why the helper does not do it here.
+    #[cfg(target_os = "macos")]
+    pub fn trust_for_this_user(&self) -> Result<()> {
+        let folder = data_folder()?;
+        fs::create_dir_all(&folder)?;
+        let path = folder.join(format!("ca-{:.16}.pem", self.sha256()));
+        fs::write(&path, &self.pem)?;
+        let added = security(&[
+            "add-trusted-cert",
+            "-r",
+            "trustRoot",
+            "-p",
+            "ssl",
+            &path.to_string_lossy(),
+        ]);
+        fs::remove_file(&path).ok();
+        added
+    }
+
+    /// macOS: stops trusting it and takes it out of the login keychain.
+    #[cfg(target_os = "macos")]
+    pub fn untrust_for_this_user(&self) -> Result<()> {
+        let folder = data_folder()?;
+        let path = folder.join(format!("ca-{:.16}.pem", self.sha256()));
+        fs::write(&path, &self.pem)?;
+        let removed = security(&["remove-trusted-cert", &path.to_string_lossy()]);
+        fs::remove_file(&path).ok();
+        // Its trust may have been removed by hand already: what matters is
+        // that the certificate goes too.
+        let deleted = security(&["delete-certificate", "-Z", self.sha256()]);
+        removed.or(deleted)
     }
 
     /// Whether its constraints let it vouch for `name`.
@@ -328,6 +381,22 @@ impl Minter {
         self.minted.lock().unwrap().insert(name, leaf.clone());
         Ok(leaf)
     }
+}
+
+#[cfg(target_os = "macos")]
+fn security(arguments: &[&str]) -> Result<()> {
+    let output = std::process::Command::new("security")
+        .args(arguments)
+        .output()
+        .context("running security")?;
+    if !output.status.success() {
+        bail!(
+            "security {} failed: {}",
+            arguments[0],
+            devshare_protocol::clean(&String::from_utf8_lossy(&output.stderr), 300)
+        );
+    }
+    Ok(())
 }
 
 /// A positive serial number of 16 random bytes.

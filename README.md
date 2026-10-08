@@ -102,8 +102,7 @@ refuses names outside the test domains unless root lists a domain in
 ## HTTPS without a warning
 
 A project's `https://shop.test` has a certificate no browser of the guest
-trusts. With the helper installed, a guest can make a certificate authority
-of their own device, once:
+trusts. A guest can make a certificate authority of their own device, once:
 
 ```sh
 devshare ca install
@@ -119,8 +118,11 @@ service whose certificate changed during the session is refused.
 The authority is trusted on this device only, and can only vouch for
 development names: its certificate is constrained to `.test`, `.localhost`,
 `.example`, `.invalid`, `.internal`, `home.arpa` and the guest's own `domain`
-setting, and excludes every IP address. The helper refuses to install one
-that is not. Its key is a file readable by the user alone, in DevShare's data
+setting, and excludes every IP address. On Linux, the helper installs it in
+the system's store and refuses one that is not constrained so. On macOS,
+the system lets no background service change trust settings: `devshare ca
+install` trusts it in your login keychain, for SSL only, and macOS asks for
+your password once. Its key is a file readable by the user alone, in DevShare's data
 folder. `devshare ca` shows it, `devshare ca renew` replaces it, `devshare ca
 remove` removes it; uninstalling the helper removes every one it installed.
 Firefox on Linux keeps its own list of authorities and needs it imported by

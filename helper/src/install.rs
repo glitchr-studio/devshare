@@ -105,7 +105,15 @@ fn start() -> Result<()> {
 
 #[cfg(target_os = "macos")]
 fn stop() -> Result<()> {
-    run("launchctl", &["bootout", &format!("system/{LABEL}")])
+    // Quietly: there is nothing to stop on a first installation.
+    let stopped = Command::new("launchctl")
+        .args(["bootout", &format!("system/{LABEL}")])
+        .output()
+        .context("running launchctl")?;
+    if !stopped.status.success() {
+        bail!("the helper was not running");
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]

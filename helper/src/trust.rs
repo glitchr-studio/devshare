@@ -75,7 +75,12 @@ pub fn trust(store: &Store, uid: u32, pem: &str, domains: Vec<String>) -> Result
     let kept = store.kept.join(format!("{sha256}.pem"));
     fs::write(&kept, der_to_pem(&authority.der))?;
     fs::set_permissions(&kept, fs::Permissions::from_mode(0o644))?;
-    install(&sha256, &kept)?;
+    if let Err(error) = install(&sha256, &kept) {
+        // What it managed to add before failing goes again.
+        uninstall(&sha256, &kept).ok();
+        fs::remove_file(&kept).ok();
+        return Err(error);
+    }
 
     if !known {
         let mut entries = entries;
