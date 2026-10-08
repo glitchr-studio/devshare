@@ -29,8 +29,8 @@ Early and experimental. It works between macOS and Linux computers and is
 covered by automated tests, but:
 
 - the invitation scheme has not had a security review;
-- there is no iPhone, Android or Windows client yet: a phone that opens an
-  invitation gets a page saying so;
+- the iPhone app is built but not distributed, and there is no Android or
+  Windows client yet: a phone that opens an invitation gets a page saying so;
 - by default, sessions go through the public relays of the
   [iroh](https://github.com/n0-computer/iroh) project;
 - joining a session needs either the helper below, installed once with
@@ -138,6 +138,24 @@ without sudo. `make app` runs it, `make dmg` builds an unsigned
 `dist/DevShare.app` and disk image; the `devshare://` link only works once
 the app is in Applications.
 
+## The iPhone app
+
+`ios/` holds the iPhone and iPad app (SwiftUI, iOS 17 or later) on the same
+core, through `mobile/` (UniFFI). It joins with the invitation (pasted,
+scanned, or handed over by a `devshare://` link) and opens the services in
+its own browser, under their real names. That browser goes through a proxy
+on the phone's loopback, guarded by a password: the session's names go
+through the session, with HTTPS checked against the certificate the host
+saw, and any other site is reached directly. Other apps of the phone are not
+affected; a system-wide tunnel needs Apple's Network Extension and is not
+written yet.
+
+```sh
+make ios-app      # the core for iOS, the bindings, ios/DevShare.xcodeproj
+```
+
+Then open `ios/DevShare.xcodeproj` in Xcode, pick an iPhone and run.
+
 ## Commands
 
 | Command | What it does |
@@ -181,7 +199,9 @@ protocol/   manifest, invitation code, messages between guest and host
 core/       the link, the host agent, the guest tunnel, compose discovery
 cli/        devshare
 server/     the control plane: devshare-server
-app/        the desktop host app (Tauri)
+app/        the desktop app (Tauri)
+mobile/     the core for the phone apps, through UniFFI
+ios/        the iPhone and iPad app (SwiftUI)
 docs/       the public invitation page, served at join.glitchr.dev
 deploy/     the public server: relay and control plane behind Caddy
 docker/     end-to-end harness: host, guest, control plane, relay

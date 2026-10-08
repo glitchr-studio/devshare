@@ -10,6 +10,8 @@ mod dns;
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 mod helper;
 mod link;
+pub mod proxy;
+mod summary;
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 mod system;
 mod tls;
@@ -20,6 +22,7 @@ pub use devshare_protocol::names::{is_hostname, NamePolicy, DEV_DOMAINS};
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub use helper::Helper;
 pub use link::{End, GuestLink, JoinError, OpenError, Opener};
+pub use summary::{Summary, SummaryEnvironment, SummaryService};
 pub use tls::Termination;
 pub use tunnel::Tunnel;
 

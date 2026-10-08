@@ -15,7 +15,7 @@ RUST = docker run --rm \
 	-w /work rust:1-bookworm
 CARGO = $(RUST) cargo
 
-.PHONY: build release test tests check e2e deploy deb dist-macos relay macos ios app dmg showcase demo install uninstall clean
+.PHONY: build release test tests check e2e deploy deb dist-macos relay macos ios ios-app app dmg showcase demo install uninstall clean
 
 build:
 	$(CARGO) build
@@ -110,6 +110,12 @@ ios:
 	rustup target add aarch64-apple-ios >/dev/null 2>&1 || true
 	env -u SDKROOT IPHONEOS_DEPLOYMENT_TARGET=16.0 PATH="$$(brew --prefix rustup)/bin:$$PATH" \
 		cargo build -p devshare-core --release --target aarch64-apple-ios --target-dir target-macos
+
+# The iPhone app: the core for iOS, its Swift bindings and the Xcode project
+# (ios/DevShare.xcodeproj), then compiled unsigned to check it. Open the
+# project in Xcode to run it on an iPhone.
+ios-app:
+	ios/build.sh --check
 
 # The showcase started and shared in one go: its services, the invitation and
 # its QR code in this terminal. Ctrl-C stops both.

@@ -329,7 +329,7 @@ function renderJoined(view) {
           element('span', { className: 'mono', textContent: service.address }),
           ...(service.certified
             ? [element('span', { className: 'tag certified', textContent: 'HTTPS, certified by this computer' })]
-            : service.tls ? [element('span', { className: 'tag', textContent: 'HTTPS' })] : []),
+            : service.sha256 ? [element('span', { className: 'tag', textContent: 'HTTPS' })] : []),
           opener(service.url, 'Open'),
         ]))),
     ]));

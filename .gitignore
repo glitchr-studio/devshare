@@ -4,3 +4,7 @@ target-macos/
 dist/
 app/gen/
 bin/
+ios/Generated/
+ios/Core.xcframework/
+ios/DevShare.xcodeproj/
+ios/DevShare/Info.plist

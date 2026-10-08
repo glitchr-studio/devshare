@@ -13,9 +13,8 @@ use std::{
 use anyhow::Result;
 use devshare_core::{
     environment::{self, Settings},
-    guest::{self, GuestLink, NamePolicy, Termination, Tunnel},
+    guest::{self, GuestLink, NamePolicy, Summary, SummaryEnvironment, Termination, Tunnel},
     invite::DeviceSecret,
-    protocol::{clean, Manifest},
     qr,
 };
 use serde::Serialize;
@@ -27,30 +26,11 @@ const REFRESH: Duration = Duration::from_secs(1);
 /// Everything the window shows about a joined session.
 #[derive(Debug, Clone, Serialize)]
 pub struct JoinedView {
-    pub environments: Vec<JoinedEnvironment>,
+    pub environments: Vec<SummaryEnvironment>,
     pub remaining: u64,
     /// `direct` or `relayed`, once known.
     pub route: Option<String>,
     pub latency: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct JoinedEnvironment {
-    pub name: String,
-    /// Where to start, as the host declared it.
-    pub entrypoint: Option<String>,
-    pub services: Vec<JoinedService>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct JoinedService {
-    /// `shop.test:443`.
-    pub address: String,
-    /// What a browser opens: `https://shop.test`.
-    pub url: String,
-    pub tls: bool,
-    /// Certified by this device's own authority: opens without a warning.
-    pub certified: bool,
 }
 
 /// What the window is told.
@@ -112,8 +92,14 @@ impl Joined {
             }
         };
 
-        let view = view_of(&link.manifest, &certified);
-        let urls = std::sync::Arc::new(urls_of(&view));
+        let summary = Summary::of(&link.manifest, &certified);
+        let urls = std::sync::Arc::new(summary.urls());
+        let view = JoinedView {
+            environments: summary.environments,
+            remaining: link.manifest.session.expires_in,
+            route: None,
+            latency: None,
+        };
         let deadline = Instant::now() + Duration::from_secs(link.manifest.session.expires_in);
         let (leave, inbox) = mpsc::channel(1);
         tokio::spawn(run(link, tunnel, view, deadline, inbox, on_update));
@@ -171,159 +157,5 @@ async fn run(
     on_update(JoinUpdate::Left(reason));
     if let Some(done) = asked {
         done.send(()).ok();
-    }
-}
-
-/// The session as the window shows it. Everything in it comes from the
-/// host: cleaned, and addresses rebuilt from the names and ports rather than
-/// taken as given.
-fn view_of(manifest: &Manifest, certified: &HashSet<(String, u16)>) -> JoinedView {
-    let environments = manifest
-        .environments
-        .iter()
-        .map(|(name, environment)| {
-            let services: Vec<JoinedService> = environment
-                .services
-                .iter()
-                .map(|service| {
-                    let host = service.host.to_ascii_lowercase();
-                    let tls = service.tls.is_some();
-                    JoinedService {
-                        address: format!("{host}:{}", service.port),
-                        url: url(&host, service.port, tls),
-                        tls,
-                        certified: certified.contains(&(host, service.port)),
-                    }
-                })
-                .collect();
-            // The host's entry point, if it is one of the shared addresses.
-            let entrypoint = environment.entrypoint.as_deref().and_then(|entrypoint| {
-                let parsed = url::Url::parse(entrypoint).ok()?;
-                if !matches!(parsed.scheme(), "http" | "https") {
-                    return None;
-                }
-                let host = parsed.host_str()?.to_ascii_lowercase();
-                let port = parsed.port_or_known_default()?;
-                let start = url(&host, port, parsed.scheme() == "https");
-                services
-                    .iter()
-                    .any(|service| service.url == start)
-                    .then(|| {
-                        // Percent-encoded by the parser: nothing but a path.
-                        format!("{start}{}", parsed.path().trim_end_matches('/'))
-                    })
-            });
-            JoinedEnvironment {
-                name: clean(name, 64),
-                entrypoint,
-                services,
-            }
-        })
-        .collect();
-    JoinedView {
-        environments,
-        remaining: manifest.session.expires_in,
-        route: None,
-        latency: None,
-    }
-}
-
-/// `https://shop.test`, `http://shop.test:5173`.
-fn url(host: &str, port: u16, tls: bool) -> String {
-    match (tls, port) {
-        (true, 443) => format!("https://{host}"),
-        (false, 80) => format!("http://{host}"),
-        (true, port) => format!("https://{host}:{port}"),
-        (false, port) => format!("http://{host}:{port}"),
-    }
-}
-
-fn urls_of(view: &JoinedView) -> HashSet<String> {
-    view.environments
-        .iter()
-        .flat_map(|environment| {
-            environment
-                .services
-                .iter()
-                .map(|service| service.url.clone())
-                .chain(environment.entrypoint.clone())
-        })
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use devshare_core::protocol::{Environment, Service, SessionInfo, Tls, Transport};
-
-    use super::*;
-
-    fn manifest(entrypoint: &str) -> Manifest {
-        let service = |host: &str, port, tls: bool| Service {
-            host: host.into(),
-            port,
-            protocol: Transport::Tcp,
-            tls: tls.then(|| Tls {
-                sha256: "00".repeat(32),
-            }),
-        };
-        Manifest {
-            protocol: 2,
-            manifest_version: 1,
-            session: SessionInfo {
-                id: "s".into(),
-                lifetime: 300,
-                expires_in: 120,
-                max_guests: 3,
-            },
-            environments: BTreeMap::from([(
-                "shop".to_string(),
-                Environment {
-                    entrypoint: Some(entrypoint.into()),
-                    dns: vec![],
-                    services: vec![
-                        service("Shop.test", 443, true),
-                        service("shop.test", 5173, false),
-                    ],
-                },
-            )]),
-        }
-    }
-
-    #[test]
-    fn the_window_gets_addresses_built_from_names_and_ports() {
-        let certified = HashSet::from([("shop.test".to_string(), 443)]);
-        let view = view_of(&manifest("https://shop.test/cart"), &certified);
-        let shop = &view.environments[0];
-        assert_eq!(shop.entrypoint.as_deref(), Some("https://shop.test/cart"));
-        assert_eq!(shop.services[0].url, "https://shop.test");
-        assert!(shop.services[0].certified);
-        assert_eq!(shop.services[1].url, "http://shop.test:5173");
-        assert!(!shop.services[1].certified);
-        assert_eq!(view.remaining, 120);
-
-        let urls = urls_of(&view);
-        assert!(urls.contains("https://shop.test"));
-        assert!(urls.contains("https://shop.test/cart"));
-        assert!(!urls.contains("https://evil.example"));
-    }
-
-    #[test]
-    fn an_entrypoint_that_is_not_a_shared_address_is_dropped() {
-        for entrypoint in [
-            "https://evil.example/",
-            "file:///etc/passwd",
-            "javascript:alert(1)",
-            "http://shop.test:9999/",
-        ] {
-            let view = view_of(&manifest(entrypoint), &HashSet::new());
-            assert_eq!(view.environments[0].entrypoint, None, "{entrypoint}");
-        }
-        let view = view_of(&manifest("https://shop.test/"), &HashSet::new());
-        assert_eq!(
-            view.environments[0].entrypoint.as_deref(),
-            Some("https://shop.test")
-        );
     }
 }

@@ -117,7 +117,12 @@ impl DeviceSecret {
     /// This device's secret, made the first time. Under sudo it is kept in
     /// the home of the user who asked, not root's.
     pub fn load() -> Result<Self> {
-        let folder = data_folder()?;
+        Self::load_from(&data_folder()?)
+    }
+
+    /// The same, kept in `folder`: for an app that has a data folder of its
+    /// own, such as a phone's.
+    pub fn load_from(folder: &std::path::Path) -> Result<Self> {
         let path = folder.join(DEVICE_FILE);
         if let Ok(bytes) = fs::read(&path) {
             let secret: [u8; 32] = bytes
@@ -125,7 +130,7 @@ impl DeviceSecret {
                 .map_err(|_| anyhow!("{} is not a device secret", path.display()))?;
             return Ok(Self(secret));
         }
-        fs::create_dir_all(&folder).with_context(|| format!("creating {}", folder.display()))?;
+        fs::create_dir_all(folder).with_context(|| format!("creating {}", folder.display()))?;
         let secret = Self::random();
         let mut file = fs::OpenOptions::new()
             .write(true)
@@ -134,7 +139,7 @@ impl DeviceSecret {
             .open(&path)
             .with_context(|| format!("creating {}", path.display()))?;
         file.write_all(&secret.0)?;
-        give_back(&folder);
+        give_back(folder);
         give_back(&path);
         Ok(secret)
     }

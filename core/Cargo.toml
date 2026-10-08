@@ -33,6 +33,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 sha2 = "0.11"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }
 time = "0.3"
+url = "2"
 # Not used directly. libc 0.2.190 no longer defines `in6_ifreq` on iOS, which
 # netdev 0.46 (through iroh) needs there: without this pin the core does not
 # build for iOS. Remove once either crate is fixed.
