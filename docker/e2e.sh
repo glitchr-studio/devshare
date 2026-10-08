@@ -133,7 +133,7 @@ if [[ $mode == helper ]]; then
     echo "The device's own certificate authority"
     expect "none at first" "no certificate authority of its own" as_guest "devshare ca"
     expect "made and trusted through the helper, by the ordinary user" "This computer trusts DevShare" as_guest "devshare ca install"
-    expect "for the dev domains only" "for       test, localhost, example, invalid, internal, home.arpa" as_guest "devshare ca"
+    expect "for the dev domains only" "for       test, localhost, example, invalid, internal, home.arpa, local" as_guest "devshare ca"
     expect "the system's store holds it" "DevShare" guest sh -c 'openssl x509 -noout -subject -in /usr/local/share/ca-certificates/devshare-*.crt'
     expect "its key stays the user's, readable by the user only" "-rw------- guest" guest sh -c "ls -l /home/guest/.local/share/devshare/ca.key | tr -s ' ' | cut -d' ' -f1,3"
     expect "the helper recorded it for that user" "$(guest id -u guest)" guest cat /etc/devshare/trusted-cas

@@ -428,6 +428,7 @@ pub fn discover(directory: &Path, options: &Options) -> Result<Discovery> {
         }
     }
     find_routes(directory, &services, options, &mut discovery);
+    named_by_env(&variables, options, &mut discovery);
 
     // Vite often runs on the machine next to the containers: its port is
     // then published by none of them.
@@ -486,7 +487,85 @@ fn on_the_machine(
         discovery.notes.extend(local.notes);
     }
     discovery.sources = sources;
+    named_by_env(variables, options, &mut discovery);
     Ok(discovery)
+}
+
+/// The variables a project names itself in: its certificate's names, the
+/// address its framework builds links with.
+const NAME_VARIABLES: [&str; 6] = [
+    "SSL_CERT_DOMAINS",
+    "SERVER_NAME",
+    "VIRTUAL_HOST",
+    "APP_DOMAIN",
+    "DEFAULT_URI",
+    "APP_URL",
+];
+
+/// The names the project gives itself in its environment (`.env`, then
+/// `.env.local`, then the shell): the first becomes its hostname unless one
+/// was chosen, the others go with it. `SSL_CERT_DOMAINS=localhost,shop.local`
+/// makes the project `shop.local` for its guests.
+fn named_by_env(variables: &HashMap<String, String>, options: &Options, discovery: &mut Discovery) {
+    let policy = devshare_protocol::names::NamePolicy::with(options.domain.clone());
+    let mut names: Vec<(String, &str)> = Vec::new();
+    let mut refused: Vec<String> = Vec::new();
+    for variable in NAME_VARIABLES {
+        let Some(value) = variables.get(variable) else {
+            continue;
+        };
+        for word in value
+            .split([',', ' ', '\t'])
+            .map(str::trim)
+            .filter(|word| !word.is_empty())
+        {
+            // An address (`https://shop.local:8443/`) stands for its host.
+            let name = match url::Url::parse(word) {
+                Ok(address) if address.has_host() => {
+                    address.host_str().unwrap_or_default().to_string()
+                }
+                _ => word.to_string(),
+            };
+            let name = name.trim_end_matches('.').to_ascii_lowercase();
+            // This machine keeps `localhost`; addresses are not names.
+            if name == "localhost"
+                || name.parse::<std::net::IpAddr>().is_ok()
+                || !devshare_protocol::names::is_hostname(&name)
+            {
+                continue;
+            }
+            if !policy.accepts(&name) {
+                if !refused.contains(&name) {
+                    refused.push(name);
+                }
+                continue;
+            }
+            if !names.iter().any(|(known, _)| *known == name) {
+                names.push((name, variable));
+            }
+        }
+    }
+    if !refused.is_empty() {
+        discovery.notes.push(format!(
+            "Named in the project's environment but left out, as guests would refuse them: {}.",
+            refused.join(", ")
+        ));
+    }
+    let Some((first, _)) = names.first() else {
+        return;
+    };
+    if options.hostname.is_none() {
+        discovery.hostname = first.clone();
+    }
+    for (name, variable) in names {
+        if name != discovery.hostname && !discovery.routes.iter().any(|route| route.name == name) {
+            discovery.routes.push(Route {
+                name,
+                service: None,
+                source: format!("{variable} in the environment"),
+            });
+        }
+    }
 }
 
 /// The names the project's proxies answer, on the ports of the proxy that

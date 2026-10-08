@@ -45,7 +45,11 @@ GNU General Public License, version 3 or later: see [LICENSE](LICENSE).
 - **The host** reads which ports a project publishes from its Docker Compose
   file (`devshare discover`, or automatically on the first `devshare share`)
   and writes them to a `devshare.toml` in the project's folder. Databases,
-  caches, mail servers and shells are left out unless asked for. Behind a
+  caches, mail servers and shells are left out unless asked for. The
+  hostname is the one the project gives itself in its environment
+  (`SSL_CERT_DOMAINS=localhost,shop.local` in `.env` or `.env.local` makes it
+  `shop.local`; also `SERVER_NAME`, `VIRTUAL_HOST`, `APP_DOMAIN`,
+  `DEFAULT_URI`, `APP_URL`), else `<folder>.test`. Behind a
   reverse proxy, the names it answers come from its configuration: Traefik
   labels, a Caddyfile, nginx's `server_name`, and their subdomains in
   `/etc/hosts`. Without a compose file, a Vite dev server and the Symfony
@@ -176,7 +180,7 @@ service whose certificate changed during the session is refused.
 
 The authority is trusted on this device only, and can only vouch for
 development names: its certificate is constrained to `.test`, `.localhost`,
-`.example`, `.invalid`, `.internal`, `home.arpa` and the guest's own `domain`
+`.example`, `.invalid`, `.internal`, `home.arpa`, `.local` and the guest's own `domain`
 setting, and excludes every IP address. On Linux, the helper installs it in
 the system's store and refuses one that is not constrained so. On macOS,
 the system lets no background service change trust settings: `devshare ca

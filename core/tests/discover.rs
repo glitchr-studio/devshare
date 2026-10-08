@@ -542,3 +542,63 @@ fn vite_on_the_machine_next_to_containers_and_not_twice() {
     assert_eq!(shared(&found), [format!("{name}:5174")]);
     std::fs::remove_dir_all(&folder).ok();
 }
+
+#[test]
+fn the_project_names_itself_in_its_environment() {
+    let folder = files(
+        "named",
+        &[
+            (
+                "docker-compose.yml",
+                "services:\n  app:\n    image: my/app\n    ports: [\"${APP_HTTPS:-443}:443\", \"${APP_HTTP:-80}:80\"]\n",
+            ),
+            (
+                ".env",
+                "APP_HTTP=8124\nAPP_HTTPS=8633\nSSL_CERT_DOMAINS=localhost,shop.local,127.0.0.1\nDEFAULT_URI=https://localhost:8633\n",
+            ),
+            // The developer's own file wins, as it does for the project.
+            (".env.local", "SSL_CERT_DOMAINS=localhost,shop.local,admin.shop.local,shop.com\n"),
+        ],
+    );
+    let found = discover(&folder, &Options::default()).unwrap();
+    assert_eq!(found.hostname, "shop.local");
+    assert_eq!(
+        shared(&found),
+        [
+            "admin.shop.local:8124",
+            "admin.shop.local:8633",
+            "shop.local:8124",
+            "shop.local:8633",
+        ]
+    );
+    assert_eq!(
+        found.entrypoint().as_deref(),
+        Some("https://shop.local:8633")
+    );
+    assert_eq!(
+        found.routes[0].source,
+        "SSL_CERT_DOMAINS in the environment"
+    );
+    assert!(
+        found.notes.iter().any(|note| note.contains("shop.com")),
+        "{:?}",
+        found.notes
+    );
+
+    // An address names its host too; a name chosen by hand still wins.
+    std::fs::write(
+        folder.join(".env.local"),
+        "SSL_CERT_DOMAINS=localhost\nDEFAULT_URI=https://shop.local:8633/\n",
+    )
+    .unwrap();
+    assert_eq!(
+        discover(&folder, &Options::default()).unwrap().hostname,
+        "shop.local"
+    );
+    let chosen = Options {
+        hostname: Some("mine.test".into()),
+        ..Options::default()
+    };
+    assert_eq!(discover(&folder, &chosen).unwrap().hostname, "mine.test");
+    std::fs::remove_dir_all(&folder).ok();
+}

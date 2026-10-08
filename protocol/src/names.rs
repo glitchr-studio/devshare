@@ -19,6 +19,9 @@ pub const DEV_DOMAINS: &[&str] = &[
     "invalid",
     "internal",
     "home.arpa",
+    // Reserved for names a local network gives itself (RFC 6762): many
+    // development setups use it, and no public site can.
+    "local",
 ];
 
 /// Letters, digits and hyphens in labels of 1 to 63, up to 253 in all.
