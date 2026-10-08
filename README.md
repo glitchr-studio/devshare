@@ -194,15 +194,18 @@ hand.
 ## The desktop app
 
 `app/` is the same thing with a window (Tauri). It lists the projects
-found where you keep them (`~/Sites`, `~/Projects`… or the folders named in
-the settings), one line each, with a switch: what is switched on is shared
-when you press Share, for the time you choose or with no time limit. A
+found in the folders it looks in (shown at the top, `~/Sites` and the usual
+ones to start with: add or remove any) and the ones added by hand (a folder,
+or a `devshare.toml` of any name), one line each, with a switch: what is
+switched on is shared when you press Share, for the time you choose or with
+no time limit. Any project can be taken off the list and put back; the ones
+with nothing to share are left off unless put back. A
 project switched on but not running gets a Start button, which runs its own
 `make up` when its Makefile has one (else `docker compose up -d`, or the
 `up = "…"` of its `devshare.toml`); Stop runs `make down` the same way.
 While sharing: the invitation, who is connected by their computer's login,
-disconnect someone, stop. Folded below: the helper (installed with the
-system's administrator dialog), the device's certificate authority
+disconnect someone, stop. In a sidebar (Settings): the helper (installed
+with the system's administrator dialog), the device's certificate authority
 (install, renew, remove) and the general settings, edited in place: no
 terminal needed. It also joins: paste an invitation, or click "Open in the
 DevShare app" on an invitation page, which hands it over through a

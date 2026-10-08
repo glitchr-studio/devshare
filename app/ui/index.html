@@ -10,19 +10,27 @@
   <main id="setup" hidden>
     <header class="bar">
       <h1>DevShare</h1>
+      <button id="open-sidebar" type="button" title="This computer and settings">⚙ Settings</button>
     </header>
 
     <p id="ended" class="notice" hidden></p>
 
     <section class="projects">
       <h2>Projects</h2>
-      <p id="looking" class="muted"></p>
+      <div class="sources">
+        <span class="muted">Looking in</span>
+        <span id="sources"></span>
+        <button id="add-source" type="button" class="small">Add a source…</button>
+      </div>
       <ul id="projects" class="projects-list"></ul>
-      <p id="none" class="muted" hidden>No project found there. Add a project's folder: DevShare reads the ports it publishes from its Docker Compose file, its Vite or its Symfony configuration.</p>
+      <p id="none" class="muted" hidden>No project found there. Add a source, a project's folder or its devshare.toml: DevShare reads the ports a project publishes from its Docker Compose file, its Vite or its Symfony configuration.</p>
       <p class="adding">
-        <button id="add" type="button">Add a folder…</button>
+        <button id="add" type="button">Add a project…</button>
+        <button id="add-file" type="button">Add a devshare.toml…</button>
         <span id="added" class="muted"></span>
+        <button id="show-hidden" type="button" class="link" hidden></button>
       </p>
+      <ul id="hidden" class="hidden-list" hidden></ul>
 
       <form id="choose" class="options">
         <label>For
@@ -54,43 +62,6 @@
       <p id="join-error" class="error" role="alert"></p>
     </section>
 
-    <details class="more">
-      <summary>This computer and settings</summary>
-
-      <section class="computer">
-        <h2>This computer</h2>
-        <ul class="facts">
-          <li>
-            <div><strong>Helper</strong><span id="helper-state" class="muted"></span></div>
-            <button id="helper-install" type="button" hidden>Install</button>
-          </li>
-          <li>
-            <div><strong>Certificate authority</strong><span id="authority-state" class="muted"></span></div>
-            <span class="actions">
-              <button id="authority-install" type="button" hidden>Install</button>
-              <button id="authority-renew" type="button" hidden>Renew</button>
-              <button id="authority-remove" type="button" hidden>Remove</button>
-            </span>
-          </li>
-        </ul>
-        <p id="computer-error" class="error" role="alert"></p>
-      </section>
-
-      <section class="settings">
-        <h2>Settings</h2>
-        <form id="settings">
-          <label>Usual duration <input name="duration" type="text" placeholder="5m, 2h, or none" spellcheck="false"></label>
-          <label>Usual number of guests <input name="guests" type="number" min="1" max="50" placeholder="3"></label>
-          <label>Domain of new projects <input name="domain" type="text" placeholder="test" spellcheck="false"></label>
-          <label>Look for projects in <input name="folders" type="text" placeholder="~/Sites, ~/Projects…" spellcheck="false"></label>
-          <label>Relay <input name="relay" type="text" placeholder="iroh's public relays" spellcheck="false"></label>
-          <label>Control plane <input name="server" type="text" placeholder="http://localhost:8787" spellcheck="false"></label>
-          <label>Invitation page <input name="join" type="text" placeholder="https://join.glitchr.dev" spellcheck="false"></label>
-          <p class="settings-actions"><button type="submit">Save</button> <span id="settings-said" class="muted"></span></p>
-        </form>
-        <p class="muted">Common to all your projects. An empty field means the default. A project's own environments are in its folder, in <code>devshare.toml</code>.</p>
-      </section>
-    </details>
   </main>
 
   <main id="session" hidden>
@@ -155,6 +126,50 @@
       <p class="muted">These names work in every program of this computer for as long as the session lasts, and go with it. Your own projects keep their addresses.</p>
     </div>
   </main>
+
+  <aside id="sidebar" class="sidebar" hidden>
+    <header class="bar">
+      <h1>Settings</h1>
+      <button id="close-sidebar" type="button" class="disclose" title="Close">×</button>
+    </header>
+    <div class="sidebar-body">
+
+      <section class="computer">
+        <h2>This computer</h2>
+        <ul class="facts">
+          <li>
+            <div><strong>Helper</strong><span id="helper-state" class="muted"></span></div>
+            <button id="helper-install" type="button" hidden>Install</button>
+          </li>
+          <li>
+            <div><strong>Certificate authority</strong><span id="authority-state" class="muted"></span></div>
+            <span class="actions">
+              <button id="authority-install" type="button" hidden>Install</button>
+              <button id="authority-renew" type="button" hidden>Renew</button>
+              <button id="authority-remove" type="button" hidden>Remove</button>
+            </span>
+          </li>
+        </ul>
+        <p id="computer-error" class="error" role="alert"></p>
+      </section>
+
+      <section class="settings">
+        <h2>General</h2>
+        <form id="settings">
+          <label>Usual duration <input name="duration" type="text" placeholder="5m, 2h, or none" spellcheck="false"></label>
+          <label>Usual number of guests <input name="guests" type="number" min="1" max="50" placeholder="3"></label>
+          <label>Domain of new projects <input name="domain" type="text" placeholder="test" spellcheck="false"></label>
+          <label>Look for projects in <input name="folders" type="text" placeholder="~/Sites, ~/Projects…" spellcheck="false"></label>
+          <label>Relay <input name="relay" type="text" placeholder="iroh's public relays" spellcheck="false"></label>
+          <label>Control plane <input name="server" type="text" placeholder="http://localhost:8787" spellcheck="false"></label>
+          <label>Invitation page <input name="join" type="text" placeholder="https://join.glitchr.dev" spellcheck="false"></label>
+          <p class="settings-actions"><button type="submit">Save</button> <span id="settings-said" class="muted"></span></p>
+        </form>
+        <p class="muted">Common to all your projects. An empty field means the default. A project's own environments are in its folder, in <code>devshare.toml</code>.</p>
+      </section>
+    </div>
+  </aside>
+  <div id="scrim" class="scrim" hidden></div>
 
   <script src="app.js"></script>
 </body>

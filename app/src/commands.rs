@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, Runtime, State};
 
 use crate::{
     joined::{JoinUpdate, Joined},
-    projects::{Project, Projects},
+    projects::{folder_of, Hidden, Project, Projects},
     session::{Session, Update},
 };
 
@@ -82,6 +82,8 @@ fn discovery_options() -> discover::Options {
 #[derive(Serialize)]
 struct Overview {
     projects: Vec<Project>,
+    /// Taken off the list, or found with nothing to share: to put back.
+    hidden: Vec<Hidden>,
     /// The folders projects are looked for in.
     folders: Vec<String>,
     /// The usual duration in minutes; 0 for no time limit.
@@ -100,6 +102,7 @@ async fn overview<R: Runtime>(app: AppHandle<R>) -> Result<Overview, String> {
             Ok(settings) => (settings, None),
             Err(error) => (Settings::default(), Some(format!("{error:#}"))),
         };
+        let listing = projects.list(&settings, &discovery_options());
         let lifetime = settings.duration().unwrap_or(environment::DEFAULT_DURATION);
         let minutes = if devshare_core::protocol::unlimited(lifetime.as_secs()) {
             0
@@ -112,7 +115,8 @@ async fn overview<R: Runtime>(app: AppHandle<R>) -> Result<Overview, String> {
                 .iter()
                 .map(|folder| folder.display().to_string())
                 .collect(),
-            projects: projects.list(&settings, &discovery_options()),
+            projects: listing.projects,
+            hidden: listing.hidden,
             minutes,
             guests: settings.guests(),
             problem,
@@ -130,27 +134,100 @@ fn switch<R: Runtime>(app: AppHandle<R>, path: String, on: bool) -> Result<(), S
         .map_err(|error| format!("{error:#}"))
 }
 
-/// Adds a project by its folder, switched on. Nothing is written into it
-/// until it is shared.
+/// Adds a project, switched on: its folder, or a devshare.toml of any name.
+/// Nothing is written into it until it is shared. A folder that is no
+/// project but holds some becomes a folder projects are looked for in.
 #[tauri::command]
 fn add_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<String, String> {
-    let folder = projects(&app)?
-        .add(&PathBuf::from(path.trim()))
-        .map_err(|error| format!("{error:#}"))?;
-    Ok(folder
+    let path = PathBuf::from(path.trim());
+    let projects = projects(&app)?;
+    if path.is_dir()
+        && !discover::is_project(&path)
+        && !path.join(discover::FILE).is_file()
+        && !discover::candidates(std::slice::from_ref(&path), &[]).is_empty()
+    {
+        change_sources(|sources| sources.push(path.display().to_string()))?;
+        return Ok(format!("projects in {}", path.display()));
+    }
+    let added = projects.add(&path).map_err(|error| format!("{error:#}"))?;
+    Ok(added
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default())
 }
 
-/// Asks for a folder with the system's own dialog.
+/// Changes the folders projects are looked for in, starting from the usual
+/// ones when none were chosen.
+fn change_sources(change: impl FnOnce(&mut Vec<String>)) -> Result<(), String> {
+    let mut settings = Settings::load().map_err(|error| format!("{error:#}"))?;
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let mut sources = settings.folders.clone().unwrap_or_else(|| {
+        discover::usual_folders(&home)
+            .iter()
+            .map(|folder| tilde(folder))
+            .collect()
+    });
+    change(&mut sources);
+    let mut seen = Vec::new();
+    sources.retain(|source| {
+        let new = !seen.contains(source);
+        seen.push(source.clone());
+        new
+    });
+    settings.folders = Some(sources);
+    settings.save().map_err(|error| format!("{error:#}"))
+}
+
+/// `/Users/me/Sites` as `~/Sites`, as a person writes it.
+fn tilde(folder: &std::path::Path) -> String {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    match folder.strip_prefix(&home) {
+        Ok(rest) if !home.as_os_str().is_empty() => format!("~/{}", rest.display()),
+        _ => folder.display().to_string(),
+    }
+}
+
+/// Adds a folder to look for projects in.
 #[tauri::command]
-async fn pick_folder<R: Runtime>(app: AppHandle<R>) -> Option<String> {
+fn add_source(path: String) -> Result<(), String> {
+    let folder = PathBuf::from(path.trim());
+    if !folder.is_dir() {
+        return Err(format!("{} is not a folder", folder.display()));
+    }
+    change_sources(|sources| sources.push(tilde(&folder)))
+}
+
+/// Stops looking for projects in a folder.
+#[tauri::command]
+fn remove_source(path: String) -> Result<(), String> {
+    let folder = PathBuf::from(path.trim());
+    let written = tilde(&folder);
+    change_sources(|sources| {
+        sources.retain(|source| *source != written && std::path::Path::new(source) != folder)
+    })
+}
+
+/// Asks for a folder, or a devshare.toml, with the system's own dialog.
+#[tauri::command]
+async fn pick<R: Runtime>(app: AppHandle<R>, file: bool) -> Option<String> {
     use tauri_plugin_dialog::DialogExt;
     let (chosen, picked) = tokio::sync::oneshot::channel();
-    app.dialog().file().pick_folder(move |folder| {
-        chosen.send(folder).ok();
-    });
+    let dialog = app.dialog().file();
+    if file {
+        dialog
+            .add_filter("DevShare configuration", &["toml"])
+            .pick_file(move |file| {
+                chosen.send(file).ok();
+            });
+    } else {
+        dialog.pick_folder(move |folder| {
+            chosen.send(folder).ok();
+        });
+    }
     picked
         .await
         .ok()
@@ -159,11 +236,20 @@ async fn pick_folder<R: Runtime>(app: AppHandle<R>) -> Option<String> {
         .map(|folder| folder.display().to_string())
 }
 
-/// Takes a project added by hand off the list. Its folder is left as it is.
+/// Takes a project off the list, found or added, until it is put back. Its
+/// folder is left as it is.
 #[tauri::command]
 fn remove_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<(), String> {
     projects(&app)?
         .remove(&PathBuf::from(path))
+        .map_err(|error| format!("{error:#}"))
+}
+
+/// Puts a project back on the list, even one with nothing to share.
+#[tauri::command]
+fn restore_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<(), String> {
+    projects(&app)?
+        .restore(&PathBuf::from(path))
         .map_err(|error| format!("{error:#}"))
 }
 
@@ -195,7 +281,9 @@ async fn running(paths: Vec<String>) -> Result<Vec<String>, String> {
 
 /// Whether one of a project's services answers on this machine.
 fn answers(folder: &std::path::Path, options: &discover::Options) -> bool {
-    let config = if folder.join(discover::FILE).is_file() {
+    let config = if folder.is_file() {
+        environment::Config::load(Some(folder.to_path_buf())).ok()
+    } else if folder.join(discover::FILE).is_file() {
         environment::Config::of(folder).ok()
     } else {
         discover::discover(folder, options)
@@ -227,7 +315,7 @@ fn answers(folder: &std::path::Path, options: &discover::Options) -> bool {
 /// Makefile has them, else Docker Compose, else what its devshare.toml says.
 #[tauri::command]
 async fn run_project(path: String, action: String) -> Result<(), String> {
-    let folder = PathBuf::from(path);
+    let folder = folder_of(&PathBuf::from(path));
     let commands = discover::Commands::of(&folder);
     let command = match action.as_str() {
         "up" => commands.up,
@@ -536,8 +624,11 @@ pub fn create<R: Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
             overview,
             switch,
             add_project,
-            pick_folder,
+            pick,
+            add_source,
+            remove_source,
             remove_project,
+            restore_project,
             share,
             disconnect,
             invite,

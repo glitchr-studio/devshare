@@ -51,8 +51,6 @@ async function setup(ended) {
   $('ended').textContent = ended ? `The session is over: ${ended}.` : '';
   show('setup');
   await refreshProjects();
-  refreshComputer();
-  loadSettings();
 }
 
 // One line per project, in the same order whatever is switched: name, the
@@ -66,12 +64,11 @@ async function refreshProjects() {
     return;
   }
   listed = overview.projects;
-  $('looking').textContent = overview.folders.length
-    ? `Found in ${overview.folders.map(home).join(', ')}. Switch on what to share.`
-    : 'Add a project\'s folder to share it.';
+  showSources(overview.folders);
   if (overview.problem) $('error').textContent = overview.problem;
   $('none').hidden = listed.length > 0;
   $('projects').replaceChildren(...listed.map(projectRow));
+  showHidden(overview.hidden);
 
   // The usual duration and number of guests come from the general settings.
   const minutes = String(overview.minutes);
@@ -85,6 +82,53 @@ async function refreshProjects() {
   chosen();
   refreshRunning();
 }
+
+// The folders projects are looked for in, each removable.
+function showSources(folders) {
+  $('sources').replaceChildren(...folders.map((folder) => {
+    const remove = element('button', { type: 'button', className: 'chip-remove', textContent: '×', title: `Stop looking in ${home(folder)}` });
+    remove.addEventListener('click', async () => {
+      await invoke('remove_source', { path: folder }).catch((error) => { $('error').textContent = String(error); });
+      refreshProjects();
+    });
+    return element('span', { className: 'chip' }, [home(folder), remove]);
+  }));
+  if (folders.length === 0) $('sources').textContent = 'no folder';
+}
+
+$('add-source').addEventListener('click', async () => {
+  const folder = await invoke('pick', { file: false }).catch(() => null);
+  if (!folder) return;
+  try {
+    await invoke('add_source', { path: folder });
+    refreshProjects();
+  } catch (error) {
+    $('error').textContent = String(error);
+  }
+});
+
+// What is not listed: taken off, or found with nothing to share. Folded,
+// each one click from coming back.
+function showHidden(hidden) {
+  const button = $('show-hidden');
+  button.hidden = hidden.length === 0;
+  button.textContent = `${hidden.length} not listed`;
+  if (hidden.length === 0) $('hidden').hidden = true;
+  $('hidden').replaceChildren(...hidden.map((project) => {
+    const back = element('button', { type: 'button', className: 'small', textContent: 'Put back' });
+    back.addEventListener('click', async () => {
+      await invoke('restore_project', { path: project.folder });
+      refreshProjects();
+    });
+    return element('li', {}, [
+      element('strong', { textContent: project.name }),
+      element('span', { className: 'folder', textContent: `${home(project.folder)} · ${project.why}` }),
+      back,
+    ]);
+  }));
+}
+
+$('show-hidden').addEventListener('click', () => { $('hidden').hidden = !$('hidden').hidden; });
 
 // `/Users/me/Sites` as `~/Sites`.
 function home(folder) {
@@ -115,14 +159,13 @@ function projectRow(project) {
   const stop = element('button', { type: 'button', className: 'small', textContent: 'Stop', hidden: true });
   stop.addEventListener('click', () => runProject(project, 'down', stop, state));
   details.append(stop);
-  if (project.added) {
-    const remove = element('button', { type: 'button', className: 'small', textContent: 'Take off the list' });
-    remove.addEventListener('click', async () => {
-      await invoke('remove_project', { path: project.folder });
-      refreshProjects();
-    });
-    details.append(remove);
-  }
+  // Any project can go, found or added, until it is put back.
+  const remove = element('button', { type: 'button', className: 'small', textContent: 'Take off the list' });
+  remove.addEventListener('click', async () => {
+    await invoke('remove_project', { path: project.folder });
+    refreshProjects();
+  });
+  details.append(remove);
   more.addEventListener('click', () => {
     details.hidden = !details.hidden;
     more.classList.toggle('open', !details.hidden);
@@ -193,7 +236,7 @@ async function add(folder) {
   $('added').textContent = 'Reading the project…';
   try {
     const project = await invoke('add_project', { path: folder });
-    $('added').textContent = `${project} was added and switched on.`;
+    $('added').textContent = project.startsWith('projects in ') ? `Now looking for ${project}.` : `${project} was added and switched on.`;
     await refreshProjects();
   } catch (error) {
     $('added').className = 'error';
@@ -202,8 +245,12 @@ async function add(folder) {
 }
 
 $('add').addEventListener('click', async () => {
-  const folder = await invoke('pick_folder').catch(() => null);
+  const folder = await invoke('pick', { file: false }).catch(() => null);
   if (folder) add(folder);
+});
+$('add-file').addEventListener('click', async () => {
+  const file = await invoke('pick', { file: true }).catch(() => null);
+  if (file) add(file);
 });
 listen('tauri://drag-drop', (event) => add(event.payload.paths[0]));
 
@@ -278,6 +325,22 @@ $('helper-install').addEventListener('click', (event) => act(event.currentTarget
 for (const action of ['install', 'renew', 'remove']) {
   $(`authority-${action}`).addEventListener('click', (event) => act(event.currentTarget, 'authority', { action }));
 }
+
+// This computer and the settings, in a sidebar.
+function sidebar(open) {
+  $('sidebar').hidden = !open;
+  $('scrim').hidden = !open;
+  if (open) {
+    refreshComputer();
+    loadSettings();
+  }
+}
+$('open-sidebar').addEventListener('click', () => sidebar(true));
+$('close-sidebar').addEventListener('click', () => sidebar(false));
+$('scrim').addEventListener('click', () => sidebar(false));
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !$('sidebar').hidden) sidebar(false);
+});
 
 // The general settings, edited in place.
 const SETTINGS = ['duration', 'guests', 'domain', 'folders', 'relay', 'server', 'join'];

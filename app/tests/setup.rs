@@ -84,6 +84,97 @@ fn the_window_finds_projects_edits_the_settings_and_starts_nothing_it_cannot() {
     assert_eq!(overview["projects"][0]["on"], true);
     assert!(!shop.join("devshare.toml").exists());
 
+    // A found project taken off the list stays off, said apart, until put
+    // back; one with nothing to share is not listed in the first place.
+    let empty = home.join("Sites/empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    std::fs::write(
+        empty.join("compose.yaml"),
+        "services:\n  worker:\n    image: busybox\n",
+    )
+    .unwrap();
+    let overview = ask(&window, "overview", json!({})).unwrap();
+    assert_eq!(
+        overview["projects"].as_array().unwrap().len(),
+        1,
+        "{overview}"
+    );
+    assert_eq!(overview["hidden"][0]["why"], "nothing to share");
+    let shop_folder = overview["projects"][0]["folder"].clone();
+    ask(&window, "remove_project", json!({ "path": shop_folder })).unwrap();
+    let overview = ask(&window, "overview", json!({})).unwrap();
+    assert_eq!(overview["projects"], json!([]));
+    let whys: Vec<&str> = overview["hidden"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hidden| hidden["why"].as_str().unwrap())
+        .collect();
+    assert_eq!(whys, ["nothing to share", "taken off the list"]);
+    ask(&window, "restore_project", json!({ "path": shop_folder })).unwrap();
+    assert_eq!(
+        ask(&window, "overview", json!({})).unwrap()["projects"][0]["name"],
+        "shop"
+    );
+
+    // A devshare.toml of any name, anywhere: a project of its own.
+    let custom = home.join("configs/staging.toml");
+    std::fs::create_dir_all(custom.parent().unwrap()).unwrap();
+    std::fs::write(&custom, "[environments.staging]\nservices = [{ host = \"staging.local\", port = 8443, target = \"127.0.0.1:1\" }]\n").unwrap();
+    assert_eq!(
+        ask(&window, "add_project", json!({ "path": custom })).unwrap(),
+        "staging.toml"
+    );
+    let overview = ask(&window, "overview", json!({})).unwrap();
+    let staging = overview["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|project| project["name"] == "staging")
+        .unwrap();
+    assert_eq!(
+        (&staging["hostname"], &staging["on"]),
+        (&json!("staging.local"), &json!(true))
+    );
+    assert!(ask(
+        &window,
+        "add_project",
+        json!({ "path": home.join("configs/missing.toml") })
+    )
+    .is_err());
+
+    // A folder holding projects becomes a source; sources come and go.
+    let work = home.join("Work/api");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(work.join("vite.config.ts"), "export default {}\n").unwrap();
+    let said = ask(&window, "add_project", json!({ "path": home.join("Work") })).unwrap();
+    assert!(said.as_str().unwrap().starts_with("projects in"), "{said}");
+    let overview = ask(&window, "overview", json!({})).unwrap();
+    assert_eq!(
+        overview["folders"].as_array().unwrap().len(),
+        2,
+        "~/Sites kept, ~/Work added: {overview}"
+    );
+    assert!(overview["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|project| project["name"] == "api"));
+    ask(
+        &window,
+        "remove_source",
+        json!({ "path": home.join("Work") }),
+    )
+    .unwrap();
+    let overview = ask(&window, "overview", json!({})).unwrap();
+    assert!(!overview["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|project| project["name"] == "api"));
+    let written = std::fs::read_to_string(&settings).unwrap();
+    assert!(written.contains("folders = [\"~/Sites\"]"), "{written}");
+
     // Looked for where the settings say, and only there.
     let elsewhere = home.join("Elsewhere/blog");
     std::fs::create_dir_all(&elsewhere).unwrap();
@@ -92,8 +183,14 @@ fn the_window_finds_projects_edits_the_settings_and_starts_nothing_it_cannot() {
     let values = json!({ "values": { "folders": ["~/Elsewhere"], "relay": "disabled" } });
     ask(&window, "save_settings", values).unwrap();
     let overview = ask(&window, "overview", json!({})).unwrap();
-    assert_eq!(overview["projects"][0]["name"], "blog", "{overview}");
-    assert_eq!(overview["projects"].as_array().unwrap().len(), 1);
+    // What was added by hand stays, whatever the sources.
+    let names: Vec<&str> = overview["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|project| project["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["blog", "staging"], "{overview}");
 
     // The settings, read and written in place, comments kept.
     assert_eq!(
