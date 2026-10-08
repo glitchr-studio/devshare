@@ -59,18 +59,41 @@ fn the_window_finds_projects_edits_the_settings_and_starts_nothing_it_cannot() {
         .build()
         .unwrap();
 
-    // Found in ~/Sites, under the name its .env gives it.
-    let found = ask(&window, "candidates", json!({})).unwrap();
-    assert_eq!(found.as_array().unwrap().len(), 1, "{found}");
+    // Found in ~/Sites, under the name its .env gives it, switched off.
+    let overview = ask(&window, "overview", json!({})).unwrap();
+    let found = &overview["projects"];
+    assert_eq!(found.as_array().unwrap().len(), 1, "{overview}");
     assert_eq!(found[0]["hostname"], "shop.local");
-    // Added with one click, it is no candidate any more.
+    assert_eq!(
+        (&found[0]["on"], &found[0]["added"]),
+        (&json!(false), &json!(false))
+    );
+    assert_eq!(
+        found[0]["startable"], true,
+        "a compose file: docker compose up -d"
+    );
+    assert!(overview["folders"][0].as_str().unwrap().ends_with("Sites"));
+    // Switched on, it is remembered; nothing is written in its folder.
     ask(
         &window,
-        "add_project",
-        json!({ "path": found[0]["folder"] }),
+        "switch",
+        json!({ "path": found[0]["folder"], "on": true }),
     )
     .unwrap();
-    assert_eq!(ask(&window, "candidates", json!({})).unwrap(), json!([]));
+    let overview = ask(&window, "overview", json!({})).unwrap();
+    assert_eq!(overview["projects"][0]["on"], true);
+    assert!(!shop.join("devshare.toml").exists());
+
+    // Looked for where the settings say, and only there.
+    let elsewhere = home.join("Elsewhere/blog");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("vite.config.ts"), "export default {}\n").unwrap();
+    // The window sends every field: here the relay as it was.
+    let values = json!({ "values": { "folders": ["~/Elsewhere"], "relay": "disabled" } });
+    ask(&window, "save_settings", values).unwrap();
+    let overview = ask(&window, "overview", json!({})).unwrap();
+    assert_eq!(overview["projects"][0]["name"], "blog", "{overview}");
+    assert_eq!(overview["projects"].as_array().unwrap().len(), 1);
 
     // The settings, read and written in place, comments kept.
     assert_eq!(
@@ -87,8 +110,16 @@ fn the_window_finds_projects_edits_the_settings_and_starts_nothing_it_cannot() {
         "{written}"
     );
     assert!(!written.contains("relay"), "{written}");
-    let declared = ask(&window, "declared", json!({})).unwrap();
-    assert_eq!(declared["minutes"], 120);
+    let overview = ask(&window, "overview", json!({})).unwrap();
+    assert_eq!(overview["minutes"], 120);
+    // No time limit, said as 0 minutes.
+    ask(
+        &window,
+        "save_settings",
+        json!({ "values": { "duration": "none" } }),
+    )
+    .unwrap();
+    assert_eq!(ask(&window, "overview", json!({})).unwrap()["minutes"], 0);
     let refused = ask(
         &window,
         "save_settings",
@@ -99,9 +130,57 @@ fn the_window_finds_projects_edits_the_settings_and_starts_nothing_it_cannot() {
 
     // Nothing to start without a compose file; no action it does not know.
     let notes = home.join("Sites/notes").display().to_string();
-    let error = ask(&window, "start_project", json!({ "path": notes })).unwrap_err();
+    let error = ask(
+        &window,
+        "run_project",
+        json!({ "path": notes, "action": "up" }),
+    )
+    .unwrap_err();
     assert!(
-        error.as_str().unwrap().contains("no compose file"),
+        error
+            .as_str()
+            .unwrap()
+            .contains("does not know how to start"),
+        "{error}"
+    );
+    let error = ask(
+        &window,
+        "run_project",
+        json!({ "path": notes, "action": "explode" }),
+    )
+    .unwrap_err();
+    assert!(
+        error.as_str().unwrap().contains("no such action"),
+        "{error}"
+    );
+    // A project's own command, in its folder: its failure is said.
+    let made = home.join("Sites/made");
+    std::fs::create_dir_all(&made).unwrap();
+    std::fs::write(
+        made.join("Makefile"),
+        "up:\n\t@echo started > started\ndown:\n\t@echo broken >&2; exit 2\n",
+    )
+    .unwrap();
+    let path = made.display().to_string();
+    ask(
+        &window,
+        "run_project",
+        json!({ "path": path, "action": "up" }),
+    )
+    .unwrap();
+    assert!(
+        made.join("started").is_file(),
+        "make up ran in the project's folder"
+    );
+    let error = ask(
+        &window,
+        "run_project",
+        json!({ "path": path, "action": "down" }),
+    )
+    .unwrap_err();
+    assert!(
+        error.as_str().unwrap().contains("make down failed")
+            && error.as_str().unwrap().contains("broken"),
         "{error}"
     );
     let error = ask(&window, "authority", json!({ "action": "explode" })).unwrap_err();

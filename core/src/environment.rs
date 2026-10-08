@@ -57,6 +57,10 @@ pub struct Settings {
     /// empty, they point at the control plane instead.
     #[serde(default)]
     pub join: Option<String>,
+    /// Where the desktop app looks for projects. The usual folders under
+    /// the home folder (`~/Sites`, `~/Projects`…) when it is not set.
+    #[serde(default)]
+    pub folders: Option<Vec<String>>,
 }
 
 /// Removes `key` from a settings file. The comments written above it are
@@ -126,6 +130,10 @@ impl Settings {
 # from any network. Set it to \"\" to have them point at the control plane
 # instead; the one a session starts itself answers on this machine only.
 # join = \"https://join.glitchr.dev\"
+
+# Where the desktop app looks for projects. The usual folders under your
+# home folder (~/Sites, ~/Projects…) when this is not set.
+# folders = [\"~/Sites\"]
 ";
 
     /// `DEVSHARE_SETTINGS` when it is set, else the configuration folder.
@@ -151,7 +159,8 @@ impl Settings {
         };
         let settings: Self = toml::from_str(&content).with_context(|| {
             format!(
-                "{} holds general settings only (server, duration, guests, domain, relay, join); \
+                "{} holds general settings only (server, duration, guests, domain, relay, join, \
+                 folders); \
                  the environments of a project belong in its own folder",
                 path.display()
             )
@@ -196,6 +205,17 @@ impl Settings {
             ("domain", text(&self.domain)),
             ("relay", text(&self.relay)),
             ("join", text(&self.join)),
+            (
+                "folders",
+                self.folders.as_ref().map(|folders| {
+                    toml_edit::value(
+                        folders
+                            .iter()
+                            .map(|folder| folder.trim())
+                            .collect::<toml_edit::Array>(),
+                    )
+                }),
+            ),
         ];
         for (key, value) in values {
             match value {
@@ -218,6 +238,23 @@ impl Settings {
             Some(value) => duration(value).context("the duration of the general settings"),
             None => Ok(DEFAULT_DURATION),
         }
+    }
+
+    /// Where the desktop app looks for projects, `~` expanded; `None` for
+    /// the usual folders.
+    pub fn folders(&self) -> Option<Vec<PathBuf>> {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        self.folders.as_ref().map(|folders| {
+            folders
+                .iter()
+                .map(|folder| match folder.trim().strip_prefix("~/") {
+                    Some(rest) => home.join(rest),
+                    None => PathBuf::from(folder.trim()),
+                })
+                .collect()
+        })
     }
 
     pub fn guests(&self) -> u32 {
@@ -245,18 +282,25 @@ impl Settings {
 /// `90s`, `5m`, `1h`, or a number of seconds.
 pub fn duration(value: &str) -> Result<Duration> {
     let value = value.trim();
+    // Until the host stops it.
+    if matches!(
+        value.to_ascii_lowercase().as_str(),
+        "none" | "unlimited" | "0"
+    ) {
+        return Ok(Duration::from_secs(crate::protocol::NO_LIMIT));
+    }
     let (number, unit) = match value.find(|c: char| !c.is_ascii_digit()) {
         Some(index) => value.split_at(index),
         None => (value, "s"),
     };
     let number: u64 = number
         .parse()
-        .map_err(|_| anyhow!("expected a duration such as 90s, 5m or 1h"))?;
+        .map_err(|_| anyhow!("expected a duration such as 90s, 5m or 1h, or none"))?;
     let seconds = match unit {
         "s" => number,
         "m" => number * 60,
         "h" => number * 3600,
-        _ => bail!("expected a duration such as 90s, 5m or 1h"),
+        _ => bail!("expected a duration such as 90s, 5m or 1h, or none"),
     };
     if seconds == 0 {
         bail!("a session lasts at least one second");
@@ -579,5 +623,22 @@ mod tests {
             "{text}"
         );
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_session_can_have_no_time_limit() {
+        for value in ["none", "Unlimited", "0"] {
+            assert_eq!(
+                duration(value).unwrap().as_secs(),
+                crate::protocol::NO_LIMIT,
+                "{value}"
+            );
+        }
+        assert!(crate::protocol::unlimited(
+            duration("none").unwrap().as_secs()
+        ));
+        assert!(!crate::protocol::unlimited(
+            duration("24h").unwrap().as_secs()
+        ));
     }
 }

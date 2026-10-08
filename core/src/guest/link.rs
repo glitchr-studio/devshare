@@ -28,6 +28,9 @@ pub enum JoinError {
     Malformed,
     /// Unknown to the control plane: mistyped, expired or withdrawn.
     NotFound,
+    /// Nobody answers where the invitation leads: the session is over, or
+    /// its host is offline.
+    Unreachable,
     Rejected(RejectReason),
     Failed(anyhow::Error),
 }
@@ -37,6 +40,9 @@ impl std::fmt::Display for JoinError {
         match self {
             Self::Malformed => f.write_str("this is not an invitation code or link"),
             Self::NotFound => f.write_str("no session for this invitation: it may have expired"),
+            Self::Unreachable => f.write_str(
+                "nobody answers for this invitation: its session may be over, or its host offline",
+            ),
             Self::Rejected(reason) => write!(f, "{reason}"),
             Self::Failed(error) => write!(f, "{error:#}"),
         }
@@ -143,8 +149,10 @@ impl GuestLink {
                     JOIN_TIMEOUT
                 };
                 match Self::connect(host, carried, device.clone(), secret, patience).await {
-                    Err(JoinError::Failed(error)) if code.is_some() => {
-                        tracing::debug!("the address in the invitation led nowhere: {error:#}");
+                    Err(error @ (JoinError::Failed(_) | JoinError::Unreachable))
+                        if code.is_some() =>
+                    {
+                        tracing::debug!("the address in the invitation led nowhere: {error}");
                     }
                     outcome => return outcome,
                 }
@@ -183,11 +191,21 @@ impl GuestLink {
         let (pake, message) = Pake::guest(&code, &host_id).ok_or(JoinError::Malformed)?;
         let endpoint = link::endpoint_as(false, Some(secret.key_for(&host_id))).await?;
 
+        // Reaching the host at all, then the exchange: a host that is gone
+        // is said as such, not as a protocol failure.
+        let connection = match tokio::time::timeout(patience, endpoint.connect(host, ALPN)).await {
+            Ok(Ok(connection)) => connection,
+            Ok(Err(error)) => {
+                tracing::debug!("connecting to the host: {error}");
+                endpoint.close().await;
+                return Err(JoinError::Unreachable);
+            }
+            Err(_) => {
+                endpoint.close().await;
+                return Err(JoinError::Unreachable);
+            }
+        };
         let joined = tokio::time::timeout(patience, async {
-            let connection = endpoint
-                .connect(host, ALPN)
-                .await
-                .map_err(|error| anyhow!("connecting to the host: {error}"))?;
             let (mut send, mut recv) = connection
                 .open_bi()
                 .await

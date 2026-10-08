@@ -47,6 +47,15 @@ pub struct Manifest {
     pub environments: BTreeMap<String, Environment>,
 }
 
+/// What a session without a time limit lasts: until its host stops it, in
+/// practice. Guests show it as having no limit.
+pub const NO_LIMIT: u64 = 10 * 365 * 24 * 3600;
+
+/// Whether `seconds` left mean a session without a time limit.
+pub fn unlimited(seconds: u64) -> bool {
+    seconds > NO_LIMIT / 2
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: String,

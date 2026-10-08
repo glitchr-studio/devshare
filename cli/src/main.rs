@@ -343,8 +343,8 @@ async fn share(
         println!("The link and the QR code work from any network.\n");
     }
     println!(
-        "Expires in {}. Up to {max_guests} guest{}. Ctrl-C stops sharing.",
-        clock(share.remaining()),
+        "{}. Up to {max_guests} guest{}. Ctrl-C stops sharing.",
+        ends(share.remaining()),
         if max_guests == 1 { "" } else { "s" },
     );
     println!("Type \"guests\" to list them, \"revoke <number>\" to disconnect one,");
@@ -496,8 +496,8 @@ async fn join(server: Option<String>, invitation: &str, trust_names: bool) -> Re
         }
     }
     println!(
-        "\nExpires in {}. Ctrl-C leaves the session.\n",
-        clock(Duration::from_secs(link.manifest.session.expires_in)),
+        "\n{}. Ctrl-C leaves the session.\n",
+        ends(Duration::from_secs(link.manifest.session.expires_in)),
     );
 
     // Scoped: the future watching the session borrows the link until here.
@@ -761,7 +761,18 @@ fn describe(service: &Service) -> String {
 
 fn clock(duration: Duration) -> String {
     let seconds = duration.as_secs();
+    if devshare_core::protocol::unlimited(seconds) {
+        return "no time limit".into();
+    }
     format!("{:02}:{:02}", seconds / 60, seconds % 60)
+}
+
+/// `Expires in 04:59`, or `No time limit`.
+fn ends(left: Duration) -> String {
+    if devshare_core::protocol::unlimited(left.as_secs()) {
+        return "No time limit".into();
+    }
+    format!("Expires in {}", clock(left))
 }
 
 /// Ctrl-C, or the termination signal a service manager sends.

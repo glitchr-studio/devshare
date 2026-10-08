@@ -89,6 +89,8 @@ fn the_window_shares_sees_a_login_and_disconnects_it() {
     )
     .unwrap();
     std::env::set_var("DEVSHARE_SETTINGS", &general);
+    // Projects are looked for under the home folder: an empty one here.
+    std::env::set_var("HOME", &folder);
     std::env::set_var("DEVSHARE_APP_DATA", folder.join("app-data"));
     std::env::set_var("DEVSHARE_RELAY", "disabled");
     std::env::remove_var("DEVSHARE_SERVER");
@@ -111,32 +113,42 @@ fn the_window_shares_sees_a_login_and_disconnects_it() {
     });
 
     // Nothing at first, and the defaults of the general settings.
-    let declared = ask(&window, "declared", json!({})).unwrap();
-    assert_eq!(declared["environments"], json!([]));
+    let overview = ask(&window, "overview", json!({})).unwrap();
+    assert_eq!(overview["projects"], json!([]));
     assert_eq!(
-        (&declared["minutes"], &declared["guests"]),
+        (&overview["minutes"], &overview["guests"]),
         (&json!(10), &json!(2))
     );
-    assert_eq!(declared["settings"], general.display().to_string());
 
-    // The owner adds the project by its folder.
+    // The owner adds the project by its folder: listed, switched on.
     assert_eq!(
         ask(&window, "add_project", json!({ "path": site })),
         Ok(json!("site"))
     );
-    let declared = ask(&window, "declared", json!({})).unwrap();
-    assert_eq!(declared["environments"][0]["name"], "admin");
-    assert_eq!(declared["environments"][1]["services"][0], "shop.test:80");
-    assert_eq!(declared["problems"], json!([]));
+    let overview = ask(&window, "overview", json!({})).unwrap();
+    let listed = &overview["projects"][0];
+    assert_eq!(listed["name"], "site");
+    assert_eq!(listed["names"], json!(["admin.test", "shop.test"]));
+    assert_eq!(
+        (&listed["on"], &listed["added"]),
+        (&json!(true), &json!(true))
+    );
+    assert_eq!(listed["problem"], Value::Null);
+    let folder_of_site = listed["folder"].clone();
+    // Its service answers: it runs.
+    assert_eq!(
+        ask(&window, "running", json!({ "paths": [folder_of_site] })).unwrap(),
+        json!([folder_of_site])
+    );
 
-    // Nothing chosen is refused; then the Share button.
+    // Nothing switched on is refused; then the Share button.
     assert!(ask(
         &window,
         "share",
-        json!({ "environments": [], "minutes": 5, "guests": 2 })
+        json!({ "paths": [], "minutes": 5, "guests": 2 })
     )
     .is_err());
-    let share = json!({ "environments": ["shop"], "minutes": 5, "guests": 2 });
+    let share = json!({ "paths": [folder_of_site], "minutes": 5, "guests": 2 });
     assert_eq!(ask(&window, "share", share.clone()), Ok(Value::Null));
     assert!(
         ask(&window, "share", share).is_err(),
@@ -145,7 +157,7 @@ fn the_window_shares_sees_a_login_and_disconnects_it() {
 
     let started = until(&session_events, |_| true);
     let code = started["code"].as_str().unwrap().to_string();
-    assert_eq!(started["environments"].as_array().unwrap().len(), 1);
+    assert_eq!(started["environments"].as_array().unwrap().len(), 2);
     assert_eq!(started["remaining"].as_u64().unwrap() / 60, 4);
 
     // Someone joins: the window is sent their login.
@@ -193,8 +205,8 @@ fn the_window_shares_sees_a_login_and_disconnects_it() {
     // The app is ready for another session.
     assert!(ask(&window, "invite", json!({})).is_err());
 
-    // A project with a compose file: its devshare.toml is written in its
-    // own folder, under the domain of the general settings.
+    // A project with a compose file: listed under the domain of the general
+    // settings, and nothing written in its folder until it is shared.
     let showcase = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/showcase");
     let project = folder.join("project");
     std::fs::create_dir_all(&project).unwrap();
@@ -209,27 +221,34 @@ fn the_window_shares_sees_a_login_and_disconnects_it() {
     .is_err());
     assert_eq!(
         ask(&window, "add_project", json!({ "path": project })),
-        Ok(json!("showcase"))
+        Ok(json!("project"))
     );
-    assert!(project.join("devshare.toml").is_file());
-
-    let names = |declared: &Value| -> Vec<String> {
-        let environments = declared["environments"].as_array().unwrap();
-        environments
-            .iter()
-            .map(|environment| environment["name"].as_str().unwrap().to_string())
-            .collect()
-    };
-    let declared = ask(&window, "declared", json!({})).unwrap();
-    assert_eq!(names(&declared), ["admin", "shop", "showcase"]);
+    assert!(!project.join("devshare.toml").exists());
+    let overview = ask(&window, "overview", json!({})).unwrap();
+    let names: Vec<&str> = overview["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|project| project["name"].as_str().unwrap())
+        .collect();
     assert_eq!(
-        declared["environments"][2]["services"],
-        json!([
-            "showcase.lan:8710",
-            "showcase.lan:8711",
-            "showcase.lan:8712"
-        ])
+        names,
+        ["showcase", "site"],
+        "sorted by name, whatever is switched"
     );
+    assert_eq!(overview["projects"][0]["names"], json!(["showcase.lan"]));
+    assert_eq!(overview["projects"][0]["ports"], json!([8710, 8711, 8712]));
+    // Switched off, it stays where it is.
+    let showcase_folder = overview["projects"][0]["folder"].clone();
+    ask(
+        &window,
+        "switch",
+        json!({ "path": showcase_folder, "on": false }),
+    )
+    .unwrap();
+    let overview = ask(&window, "overview", json!({})).unwrap();
+    assert_eq!(overview["projects"][0]["name"], "showcase");
+    assert_eq!(overview["projects"][0]["on"], false);
 
     // Nothing was written in the general settings, nor in the owner's project.
     let untouched = std::fs::read_to_string(&general).unwrap();
@@ -241,18 +260,17 @@ fn the_window_shares_sees_a_login_and_disconnects_it() {
         .unwrap()
         .starts_with("[environments.shop]"));
 
-    // A project whose folder goes away is said; removing it clears the list
-    // and touches no file.
-    std::fs::remove_file(project.join("devshare.toml")).unwrap();
-    let declared = ask(&window, "declared", json!({})).unwrap();
-    assert_eq!(names(&declared), ["admin", "shop"]);
-    let broken = declared["problems"][0]["folder"].clone();
+    // Taking a project off the list touches no file.
     assert_eq!(
-        ask(&window, "remove_project", json!({ "path": broken })),
+        ask(
+            &window,
+            "remove_project",
+            json!({ "path": showcase_folder })
+        ),
         Ok(Value::Null)
     );
-    let declared = ask(&window, "declared", json!({})).unwrap();
-    assert_eq!(declared["problems"], json!([]));
+    let overview = ask(&window, "overview", json!({})).unwrap();
+    assert_eq!(overview["projects"].as_array().unwrap().len(), 1);
     assert!(project.join("docker-compose.yml").is_file());
 
     std::fs::remove_dir_all(&folder).ok();

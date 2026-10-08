@@ -215,7 +215,14 @@ impl Share {
             tokio::join!(check_services(&mut options.selection), link::endpoint(true));
         let endpoint = endpoint?;
         let invitation = announce(&options.server, &endpoint.addr(), options.lifetime).await?;
-        let lifetime = options.lifetime.min(Duration::from_secs(invitation.ttl));
+        // A session lasts as long as its invitation on the control plane,
+        // unless it has no time limit: its link then keeps working, and its
+        // short code for as long as the control plane keeps it.
+        let lifetime = if crate::protocol::unlimited(options.lifetime.as_secs()) {
+            options.lifetime
+        } else {
+            options.lifetime.min(Duration::from_secs(invitation.ttl))
+        };
 
         let (activity_tx, activity_rx) = mpsc::unbounded_channel();
         let shared = Arc::new(Shared {

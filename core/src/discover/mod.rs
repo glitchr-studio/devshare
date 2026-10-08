@@ -881,10 +881,9 @@ pub fn is_project(directory: &Path) -> bool {
         || local::symfony(directory).is_some()
 }
 
-/// The folders that hold projects, by where a developer keeps them: the
-/// folders `known` projects sit in, then the usual ones under the home
-/// folder. The projects found there, `known` ones left out, sorted by name.
-pub fn candidates(known: &[PathBuf], home: &Path) -> Vec<PathBuf> {
+/// Where a developer usually keeps projects, under their home folder: the
+/// ones that exist.
+pub fn usual_folders(home: &Path) -> Vec<PathBuf> {
     const USUAL: [&str; 9] = [
         "Sites",
         "Projects",
@@ -896,6 +895,16 @@ pub fn candidates(known: &[PathBuf], home: &Path) -> Vec<PathBuf> {
         "dev",
         "workspace",
     ];
+    USUAL
+        .iter()
+        .map(|name| home.join(name))
+        .filter(|folder| folder.is_dir())
+        .collect()
+}
+
+/// The projects in `roots`, one level down, `known` ones left out, sorted
+/// by name.
+pub fn candidates(roots: &[PathBuf], known: &[PathBuf]) -> Vec<PathBuf> {
     /// Enough for any developer's folder, few enough to read in a moment.
     const MOST: usize = 300;
 
@@ -903,12 +912,6 @@ pub fn candidates(known: &[PathBuf], home: &Path) -> Vec<PathBuf> {
         .iter()
         .map(|folder| folder.canonicalize().unwrap_or_else(|_| folder.clone()))
         .collect();
-    let mut roots: Vec<PathBuf> = known
-        .iter()
-        .filter_map(|folder| folder.parent().map(Path::to_path_buf))
-        .collect();
-    roots.extend(USUAL.iter().map(|name| home.join(name)));
-
     let mut found = Vec::new();
     let mut seen = Vec::new();
     for root in roots {
@@ -938,6 +941,55 @@ pub fn candidates(known: &[PathBuf], home: &Path) -> Vec<PathBuf> {
     }
     found.sort_by_key(|path| path.file_name().map(|name| name.to_ascii_lowercase()));
     found
+}
+
+/// How a project is started and stopped.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct Commands {
+    pub up: Option<String>,
+    pub down: Option<String>,
+}
+
+impl Commands {
+    /// What `devshare.toml` says (`up = "…"`, `down = "…"`), else the
+    /// project's Makefile when it has `up` and `down` targets (`make up`
+    /// reads the project's `.env` files and picks its environment itself),
+    /// else `docker compose up -d` and `docker compose down` when it has a
+    /// compose file. Nothing for a project started some other way.
+    pub fn of(folder: &Path) -> Self {
+        let written: Commands = std::fs::read_to_string(folder.join(FILE))
+            .ok()
+            .and_then(|text| toml::from_str(&text).ok())
+            .unwrap_or_default();
+        let makefile = ["Makefile", "makefile", "GNUmakefile"]
+            .iter()
+            .find_map(|name| std::fs::read_to_string(folder.join(name)).ok())
+            .unwrap_or_default();
+        let target = |name: &str| {
+            makefile.lines().any(|line| {
+                line.strip_prefix(name)
+                    .is_some_and(|rest| rest.starts_with(':') && !rest.starts_with(":="))
+            })
+        };
+        let compose = has_compose_file(folder);
+        let fallback = |make: &str, docker: &str| {
+            if target(make) {
+                Some(format!("make {make}"))
+            } else if compose {
+                Some(docker.to_string())
+            } else {
+                None
+            }
+        };
+        Self {
+            up: written
+                .up
+                .or_else(|| fallback("up", "docker compose up -d")),
+            down: written
+                .down
+                .or_else(|| fallback("down", "docker compose down")),
+        }
+    }
 }
 
 /// Whether a folder holds a compose file under one of its standard names.

@@ -193,18 +193,21 @@ hand.
 
 ## The desktop app
 
-`app/` is the same thing with a window (Tauri): pick projects, share them
-together or one alone, start a project that is not running (`docker compose
-up -d` in its folder), see who is connected by their computer's login,
-disconnect someone, stop. It lists the projects found on the computer (in
-`~/Sites` and the like, and next to the projects already added) to add in one
-click, edits the general settings in place, installs the helper (the system
-asks for an administrator's password) and installs, renews or removes the
-device's certificate authority: no terminal needed. It also joins: paste an invitation, or click "Open in the DevShare app" on an
-invitation page, which hands it over through a `devshare://` link. The app
-then shows the invitation and waits for a click: a page can never make it
-join a session on its own. Joining uses the helper, like `devshare join`
-without sudo. `make app` runs it, `make dmg` builds an unsigned
+`app/` is the same thing with a window (Tauri). It lists the projects
+found where you keep them (`~/Sites`, `~/Projects`… or the folders named in
+the settings), one line each, with a switch: what is switched on is shared
+when you press Share, for the time you choose or with no time limit. A
+project switched on but not running gets a Start button, which runs its own
+`make up` when its Makefile has one (else `docker compose up -d`, or the
+`up = "…"` of its `devshare.toml`); Stop runs `make down` the same way.
+While sharing: the invitation, who is connected by their computer's login,
+disconnect someone, stop. Folded below: the helper (installed with the
+system's administrator dialog), the device's certificate authority
+(install, renew, remove) and the general settings, edited in place: no
+terminal needed. It also joins: paste an invitation, or click "Open in the
+DevShare app" on an invitation page, which hands it over through a
+`devshare://` link; the app shows it and waits for a click, a page can never
+make it join on its own. `make app` runs it, `make dmg` builds an unsigned
 `dist/DevShare.app` and disk image; the `devshare://` link only works once
 the app is in Applications.
 
@@ -230,7 +233,7 @@ Then open `ios/DevShare.xcodeproj` in Xcode, pick an iPhone and run.
 
 | Command | What it does |
 |---|---|
-| `devshare share [folder…]` | Shares the projects in these folders, the current one by default. `--only <name>` keeps some environments, `--duration 15m` and `--guests 3` set the limits. While sharing: `guests`, `revoke <n>`, `invite`. |
+| `devshare share [folder…]` | Shares the projects in these folders, the current one by default. `--only <name>` keeps some environments, `--duration 15m` (or `none`: until you stop it) and `--guests 3` set the limits. While sharing: `guests`, `revoke <n>`, `invite`. |
 | `devshare join <invitation>` | Joins a session with its link, its QR code's text or its short code. |
 | `devshare discover [folder]` | Writes or refreshes the folder's `devshare.toml` from its compose file. |
 | `devshare settings` | Shows the general settings, common to all projects (`~/.config/devshare/devshare.toml`). |

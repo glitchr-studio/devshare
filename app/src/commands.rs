@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, Runtime, State};
 
 use crate::{
     joined::{JoinUpdate, Joined},
-    projects::Projects,
+    projects::{Project, Projects},
     session::{Session, Update},
 };
 
@@ -68,111 +68,6 @@ fn projects<R: Runtime>(app: &AppHandle<R>) -> Result<Projects, String> {
     Ok(Projects::in_folder(folder))
 }
 
-/// What the owner can choose from before sharing.
-#[derive(Serialize)]
-struct Declared {
-    environments: Vec<DeclaredEnvironment>,
-    /// What could not be read of a project, and the folder it is about.
-    problems: Vec<Problem>,
-    /// The general settings: where they are, and the defaults they give.
-    settings: String,
-    minutes: u64,
-    guests: u32,
-}
-
-#[derive(Serialize)]
-struct DeclaredEnvironment {
-    name: String,
-    services: Vec<String>,
-    /// The project's folder.
-    folder: String,
-}
-
-#[derive(Serialize)]
-struct Problem {
-    text: String,
-    folder: Option<String>,
-}
-
-#[tauri::command]
-fn declared<R: Runtime>(app: AppHandle<R>) -> Result<Declared, String> {
-    let found = projects(&app)?.declared();
-    let mut problems: Vec<Problem> = found
-        .problems
-        .into_iter()
-        .map(|(folder, text)| Problem {
-            text,
-            folder: Some(folder.display().to_string()),
-        })
-        .collect();
-    // Settings that cannot be read are said, and the defaults are used.
-    let settings = Settings::load().unwrap_or_else(|error| {
-        problems.push(Problem {
-            text: format!("{error:#}"),
-            folder: None,
-        });
-        Settings::default()
-    });
-    let minutes = settings
-        .duration()
-        .map_or(5, |duration| duration.as_secs().div_ceil(60));
-
-    Ok(Declared {
-        environments: found
-            .environments
-            .into_iter()
-            .map(|(folder, name, services)| DeclaredEnvironment {
-                name,
-                services,
-                folder: folder.display().to_string(),
-            })
-            .collect(),
-        problems,
-        settings: Settings::file().display().to_string(),
-        minutes,
-        guests: settings.guests(),
-    })
-}
-
-/// Adds a project by its folder. Its `devshare.toml` is written from its
-/// compose file, unless the owner wrote one by hand: that one is used as it
-/// is. Returns the name of the project.
-#[tauri::command]
-fn add_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<String, String> {
-    let folder = PathBuf::from(path.trim());
-    let by_hand = folder.join(discover::FILE).is_file();
-    let name = match discover::discover(&folder, &discovery_options()) {
-        Ok(found) => {
-            if let Err(error) = discover::write(&folder, &found, false) {
-                // A file written by hand stays; anything else is a refusal.
-                if !by_hand {
-                    return Err(format!("{error:#}"));
-                }
-            }
-            found.project
-        }
-        // No compose file, but a devshare.toml of the owner's own.
-        Err(_) if by_hand => folder
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-        Err(error) => return Err(format!("{error:#}")),
-    };
-    projects(&app)?
-        .add(&folder)
-        .map_err(|error| format!("{error:#}"))?;
-    Ok(name)
-}
-
-/// A project found on this computer and not on the list yet.
-#[derive(Serialize)]
-struct Candidate {
-    folder: String,
-    name: String,
-    /// The name guests would reach it under.
-    hostname: Option<String>,
-}
-
 fn discovery_options() -> discover::Options {
     discover::Options {
         hostname: None,
@@ -182,99 +77,166 @@ fn discovery_options() -> discover::Options {
     }
 }
 
-/// The projects found where projects are kept, those already added left out.
+/// What the window shows before sharing: every project, where they were
+/// looked for, and the usual duration and number of guests.
+#[derive(Serialize)]
+struct Overview {
+    projects: Vec<Project>,
+    /// The folders projects are looked for in.
+    folders: Vec<String>,
+    /// The usual duration in minutes; 0 for no time limit.
+    minutes: u64,
+    guests: u32,
+    /// Why the general settings could not be read, if they could not.
+    problem: Option<String>,
+}
+
 #[tauri::command]
-async fn candidates<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Candidate>, String> {
-    let known = projects(&app)?.folders();
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
+async fn overview<R: Runtime>(app: AppHandle<R>) -> Result<Overview, String> {
+    let projects = projects(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        // Settings that cannot be read are said, and the defaults are used.
+        let (settings, problem) = match Settings::load() {
+            Ok(settings) => (settings, None),
+            Err(error) => (Settings::default(), Some(format!("{error:#}"))),
+        };
+        let lifetime = settings.duration().unwrap_or(environment::DEFAULT_DURATION);
+        let minutes = if devshare_core::protocol::unlimited(lifetime.as_secs()) {
+            0
+        } else {
+            lifetime.as_secs().div_ceil(60)
+        };
+        Overview {
+            folders: projects
+                .roots(&settings)
+                .iter()
+                .map(|folder| folder.display().to_string())
+                .collect(),
+            projects: projects.list(&settings, &discovery_options()),
+            minutes,
+            guests: settings.guests(),
+            problem,
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// Switches a project on or off: what Share shares.
+#[tauri::command]
+fn switch<R: Runtime>(app: AppHandle<R>, path: String, on: bool) -> Result<(), String> {
+    projects(&app)?
+        .switch(&PathBuf::from(path), on)
+        .map_err(|error| format!("{error:#}"))
+}
+
+/// Adds a project by its folder, switched on. Nothing is written into it
+/// until it is shared.
+#[tauri::command]
+fn add_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<String, String> {
+    let folder = projects(&app)?
+        .add(&PathBuf::from(path.trim()))
+        .map_err(|error| format!("{error:#}"))?;
+    Ok(folder
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default())
+}
+
+/// Asks for a folder with the system's own dialog.
+#[tauri::command]
+async fn pick_folder<R: Runtime>(app: AppHandle<R>) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (chosen, picked) = tokio::sync::oneshot::channel();
+    app.dialog().file().pick_folder(move |folder| {
+        chosen.send(folder).ok();
+    });
+    picked
+        .await
+        .ok()
+        .flatten()
+        .and_then(|folder| folder.into_path().ok())
+        .map(|folder| folder.display().to_string())
+}
+
+/// Takes a project added by hand off the list. Its folder is left as it is.
+#[tauri::command]
+fn remove_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<(), String> {
+    projects(&app)?
+        .remove(&PathBuf::from(path))
+        .map_err(|error| format!("{error:#}"))
+}
+
+/// The projects, by folder, whose services answer on this machine: the
+/// others are not started.
+#[tauri::command]
+async fn running(paths: Vec<String>) -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let options = discovery_options();
-        discover::candidates(&known, &home)
-            .into_iter()
-            .map(|folder| {
-                let found = discover::discover(&folder, &options).ok();
-                Candidate {
-                    name: found
-                        .as_ref()
-                        .map(|found| found.project.clone())
-                        .or_else(|| {
-                            folder
-                                .file_name()
-                                .map(|name| name.to_string_lossy().into_owned())
-                        })
-                        .unwrap_or_default(),
-                    hostname: found.map(|found| found.hostname),
-                    folder: folder.display().to_string(),
-                }
-            })
-            .collect()
+        std::thread::scope(|scope| {
+            let checks: Vec<_> = paths
+                .iter()
+                .map(|path| {
+                    let options = &options;
+                    scope.spawn(move || {
+                        answers(std::path::Path::new(path), options).then(|| path.clone())
+                    })
+                })
+                .collect();
+            checks
+                .into_iter()
+                .filter_map(|check| check.join().ok().flatten())
+                .collect()
+        })
     })
     .await
     .map_err(|error| error.to_string())
 }
 
-/// The environments whose services answer on this machine: the others are
-/// not started.
-#[tauri::command]
-async fn running<R: Runtime>(app: AppHandle<R>) -> Result<Vec<String>, String> {
-    let config = projects(&app)?.declared().config;
-    tauri::async_runtime::spawn_blocking(move || {
+/// Whether one of a project's services answers on this machine.
+fn answers(folder: &std::path::Path, options: &discover::Options) -> bool {
+    let config = if folder.join(discover::FILE).is_file() {
+        environment::Config::of(folder).ok()
+    } else {
+        discover::discover(folder, options)
+            .ok()
+            .map(|found| found.config())
+    };
+    config.is_some_and(|config| {
         config
             .environments
-            .iter()
-            .filter(|(_, environment)| {
-                environment.services.iter().any(|service| {
-                    let target = service
-                        .target
-                        .clone()
-                        .unwrap_or_else(|| format!("127.0.0.1:{}", service.port));
-                    std::net::ToSocketAddrs::to_socket_addrs(&target)
-                        .ok()
-                        .and_then(|mut addresses| addresses.next())
-                        .is_some_and(|address| {
-                            std::net::TcpStream::connect_timeout(
-                                &address,
-                                Duration::from_millis(300),
-                            )
+            .values()
+            .flat_map(|environment| &environment.services)
+            .any(|service| {
+                let target = service
+                    .target
+                    .clone()
+                    .unwrap_or_else(|| format!("127.0.0.1:{}", service.port));
+                std::net::ToSocketAddrs::to_socket_addrs(&target)
+                    .ok()
+                    .and_then(|mut addresses| addresses.next())
+                    .is_some_and(|address| {
+                        std::net::TcpStream::connect_timeout(&address, Duration::from_millis(300))
                             .is_ok()
-                        })
-                })
+                    })
             })
-            .map(|(name, _)| name.clone())
-            .collect()
     })
-    .await
-    .map_err(|error| error.to_string())
 }
 
-/// Starts a project's services: `docker compose up -d` in its folder.
+/// Starts or stops a project its own way: `make up` / `make down` when its
+/// Makefile has them, else Docker Compose, else what its devshare.toml says.
 #[tauri::command]
-async fn start_project(path: String) -> Result<(), String> {
+async fn run_project(path: String, action: String) -> Result<(), String> {
     let folder = PathBuf::from(path);
-    if !discover::has_compose_file(&folder) {
-        return Err("this project has no compose file: start it as you usually do".into());
+    let commands = discover::Commands::of(&folder);
+    let command = match action.as_str() {
+        "up" => commands.up,
+        "down" => commands.down,
+        other => return Err(format!("no such action: {other}")),
     }
-    let output = tokio::process::Command::new(crate::system::program("docker"))
-        .args(["compose", "up", "-d"])
-        .current_dir(&folder)
-        .output()
-        .await
-        .map_err(|error| {
-            format!("Docker could not be run ({error}): is Docker Desktop installed?")
-        })?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let said = String::from_utf8_lossy(&output.stderr);
-    let last: Vec<&str> = said
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .collect();
-    Err(last[last.len().saturating_sub(4)..].join("\n"))
+    .ok_or("DevShare does not know how to start this project: start it as you usually do, or set up = \"…\" in its devshare.toml")?;
+    crate::system::run_in(&folder, &command).await
 }
-
 /// The general settings as they are written, and the defaults that apply
 /// where nothing is.
 #[derive(Serialize, serde::Deserialize)]
@@ -285,6 +247,9 @@ struct SettingsView {
     domain: Option<String>,
     relay: Option<String>,
     join: Option<String>,
+    /// Where projects are looked for, one folder after another.
+    #[serde(default)]
+    folders: Option<Vec<String>>,
 }
 
 #[tauri::command]
@@ -297,6 +262,7 @@ fn settings() -> Result<SettingsView, String> {
         domain: settings.domain,
         relay: settings.relay,
         join: settings.join,
+        folders: settings.folders,
     })
 }
 
@@ -316,6 +282,16 @@ fn save_settings(values: SettingsView) -> Result<(), String> {
         domain: filled(values.domain),
         relay: filled(values.relay),
         join: filled(values.join),
+        folders: values
+            .folders
+            .map(|folders| {
+                folders
+                    .into_iter()
+                    .map(|folder| folder.trim().to_string())
+                    .filter(|folder| !folder.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|folders| !folders.is_empty()),
     }
     .save()
     .map_err(|error| format!("{error:#}"))
@@ -400,34 +376,31 @@ async fn authority(action: String) -> Result<(), String> {
     .map_err(|error| error.to_string())?
 }
 
-/// Takes a project off the list. Its folder is left as it is.
-#[tauri::command]
-fn remove_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<(), String> {
-    projects(&app)?
-        .remove(&PathBuf::from(path))
-        .map_err(|error| format!("{error:#}"))
-}
-
 #[tauri::command]
 async fn share<R: Runtime>(
     app: AppHandle<R>,
     sharing: State<'_, Sharing>,
-    environments: Vec<String>,
+    paths: Vec<String>,
     minutes: u64,
     guests: u32,
 ) -> Result<(), String> {
     if sharing.current().is_some() {
         return Err("a session is already in progress".into());
     }
-    if environments.is_empty() {
-        return Err("choose at least one environment".into());
+    if paths.is_empty() {
+        return Err("switch on at least one project".into());
     }
-    let config = projects(&app)?.declared().config;
+    let folders: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+    let projects = projects(&app)?;
+    let config = tauri::async_runtime::spawn_blocking(move || {
+        projects.config(&folders, &discovery_options())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| format!("{error:#}"))?;
     let settings = Settings::load().unwrap_or_default();
     devshare_core::link::use_relay(settings.relay.clone());
-    let selection = config
-        .select(&environments)
-        .map_err(|error| format!("{error:#}"))?;
+    let selection = config.select(&[]).map_err(|error| format!("{error:#}"))?;
     // One session, one control plane: the one asked for, else the one of
     // the general settings. When it is meant to be on this machine and is
     // not running, the app runs it itself: its owner never has to.
@@ -435,9 +408,14 @@ async fn share<R: Runtime>(
     devshare_server::ensure_local(&server)
         .await
         .map_err(|error| format!("starting a control plane for {server}: {error}"))?;
+    // 0 minutes: no time limit, until the owner stops sharing.
+    let lifetime = match minutes {
+        0 => Duration::from_secs(devshare_core::protocol::NO_LIMIT),
+        minutes => Duration::from_secs(minutes.clamp(1, 24 * 60) * 60),
+    };
     let options = ShareOptions {
         selection,
-        lifetime: Duration::from_secs(minutes.clamp(1, 24 * 60) * 60),
+        lifetime,
         max_guests: guests.clamp(1, 50),
         server,
         join: settings.join(),
@@ -555,8 +533,10 @@ pub fn create<R: Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
         .manage(Joining::default())
         .manage(Handed::default())
         .invoke_handler(tauri::generate_handler![
-            declared,
+            overview,
+            switch,
             add_project,
+            pick_folder,
             remove_project,
             share,
             disconnect,
@@ -566,9 +546,8 @@ pub fn create<R: Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
             leave,
             open,
             handed,
-            candidates,
             running,
-            start_project,
+            run_project,
             settings,
             save_settings,
             computer,

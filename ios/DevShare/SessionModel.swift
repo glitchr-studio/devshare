@@ -83,8 +83,10 @@ final class SessionModel {
 }
 
 extension UInt64 {
-    /// `04:23`.
+    /// `04:23`, or no time limit for a session that runs until its host
+    /// stops it.
     var clock: String {
-        String(format: "%02d:%02d", self / 60, self % 60)
+        if self > 5 * 365 * 24 * 3600 { return "no time limit" }
+        return String(format: "%02d:%02d", self / 60, self % 60)
     }
 }

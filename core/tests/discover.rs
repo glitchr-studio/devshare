@@ -617,13 +617,56 @@ fn projects_are_found_where_the_known_ones_are_and_in_the_usual_folders() {
             ("elsewhere/lost/compose.yaml", "services: {}\n"),
         ],
     );
-    let found = devshare_core::discover::candidates(&[home.join("work/known")], &home);
+    // work/ because a known project sits there, Sites/ as a usual folder.
+    let mut roots = devshare_core::discover::usual_folders(&home);
+    roots.push(home.join("work"));
+    let found = devshare_core::discover::candidates(&roots, &[home.join("work/known")]);
     let names: Vec<String> = found
         .iter()
         .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
-    // work/ because a known project sits there, Sites/ as a usual folder;
-    // known ones, hidden ones and folders that are no project are left out.
+    // Known ones, hidden ones and folders that are no project are left out.
     assert_eq!(names, ["api", "blog", "shop"]);
     std::fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn a_project_is_started_its_own_way() {
+    use devshare_core::discover::Commands;
+    let folder = files(
+        "commands",
+        &[
+            ("compose.yaml", "services: {}\n"),
+            ("Makefile", "APP := x\nup: env\n\t@docker compose up -d\n\ndown:\n\t@docker compose down\nupdate:\n"),
+        ],
+    );
+    let found = Commands::of(&folder);
+    assert_eq!(found.up.as_deref(), Some("make up"));
+    assert_eq!(found.down.as_deref(), Some("make down"));
+
+    // Without the targets: Compose itself.
+    std::fs::write(folder.join("Makefile"), "upgrade:\n\ttrue\nUP := 1\n").unwrap();
+    assert_eq!(
+        Commands::of(&folder).up.as_deref(),
+        Some("docker compose up -d")
+    );
+    // Said in devshare.toml: that, whatever else there is.
+    std::fs::write(
+        folder.join(FILE),
+        "up = \"make up ENV=prod\"\n[environments]\n",
+    )
+    .unwrap();
+    assert_eq!(
+        Commands::of(&folder).up.as_deref(),
+        Some("make up ENV=prod")
+    );
+    assert_eq!(
+        Commands::of(&folder).down.as_deref(),
+        Some("docker compose down")
+    );
+    // Nothing to run a project with.
+    let bare = files("bare", &[("vite.config.ts", "export default {}\n")]);
+    assert_eq!(Commands::of(&bare), Commands::default());
+    std::fs::remove_dir_all(&folder).ok();
+    std::fs::remove_dir_all(&bare).ok();
 }

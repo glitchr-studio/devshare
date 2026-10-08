@@ -23,6 +23,57 @@ pub fn program(name: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(name))
 }
 
+/// The PATH a command started by the app gets: the system's, and the usual
+/// places of Docker and Homebrew, which an app opened from the Finder lacks.
+pub fn path() -> std::ffi::OsString {
+    let mut folders: Vec<PathBuf> =
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
+    for usual in [
+        "/usr/local/bin",
+        "/opt/homebrew/bin",
+        "/Applications/Docker.app/Contents/Resources/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ] {
+        let usual = PathBuf::from(usual);
+        if !folders.contains(&usual) {
+            folders.push(usual);
+        }
+    }
+    std::env::join_paths(folders).unwrap_or_default()
+}
+
+/// Runs a project's own command (`make up`) in its folder, the way its
+/// owner would in a terminal. Fails with the last lines it said.
+pub async fn run_in(folder: &std::path::Path, command: &str) -> Result<(), String> {
+    let output = tokio::process::Command::new("/bin/sh")
+        .args(["-c", command])
+        .current_dir(folder)
+        .env("PATH", path())
+        .output()
+        .await
+        .map_err(|error| format!("{command} could not be run: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let said = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let lines: Vec<&str> = said
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let last = lines[lines.len().saturating_sub(4)..].join("\n");
+    Err(format!(
+        "{command} failed: {}",
+        devshare_core::protocol::clean(&last, 600)
+    ))
+}
+
 /// The helper that comes with the app: next to its executable, in the app
 /// bundle or in the build folder.
 fn helper() -> Result<PathBuf, String> {

@@ -8,3 +8,8 @@ ios/Generated/
 ios/Core.xcframework/
 ios/DevShare.xcodeproj/
 ios/DevShare/Info.plist
+# Screen recordings and screenshots never go into the repository.
+*.mov
+*.mp4
+Screen Recording*
+Screenshot*

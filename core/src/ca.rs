@@ -237,7 +237,8 @@ impl DeviceCa {
     }
 
     /// Mints the certificates of one session: for `names` only, valid until
-    /// `until` and never longer than [`LONGEST_LEAF`].
+    /// `until` and never longer than [`LONGEST_LEAF`]; a longer session gets
+    /// new ones as it goes.
     pub fn minter(&self, names: &[String], until: SystemTime) -> Result<Minter> {
         let key = KeyPair::from_pem(&self.key_pem)?;
         let issuer = Issuer::from_ca_cert_pem(&self.pem, key)?;
@@ -258,7 +259,7 @@ impl DeviceCa {
             leaf_key,
             signing,
             names,
-            until: until.min(SystemTime::now() + LONGEST_LEAF),
+            until,
             minted: Mutex::new(HashMap::new()),
         })
     }
@@ -424,8 +425,10 @@ pub struct Minter {
     leaf_key: KeyPair,
     signing: Arc<dyn rustls::sign::SigningKey>,
     names: Vec<String>,
+    /// When the session ends.
     until: SystemTime,
-    minted: Mutex<HashMap<String, Arc<CertifiedKey>>>,
+    /// Each name's certificate, and when it was made.
+    minted: Mutex<HashMap<String, (Arc<CertifiedKey>, SystemTime)>>,
 }
 
 impl Minter {
@@ -441,8 +444,13 @@ impl Minter {
         if !self.mints(&name) {
             bail!("{name} is not a name this session's certificates are for");
         }
-        if let Some(leaf) = self.minted.lock().unwrap().get(&name) {
-            return Ok(leaf.clone());
+        let now = SystemTime::now();
+        // Replaced halfway through its life: a session may last longer
+        // than a certificate.
+        if let Some((leaf, made)) = self.minted.lock().unwrap().get(&name) {
+            if now.duration_since(*made).unwrap_or_default() < LONGEST_LEAF / 2 {
+                return Ok(leaf.clone());
+            }
         }
 
         let mut params = CertificateParams::default();
@@ -452,7 +460,7 @@ impl Minter {
         params.subject_alt_names = vec![SanType::DnsName(name.clone().try_into()?)];
         params.serial_number = Some(serial());
         params.not_before = OffsetDateTime::from(SystemTime::now() - SKEW);
-        params.not_after = OffsetDateTime::from(self.until);
+        params.not_after = OffsetDateTime::from(self.until.min(now + LONGEST_LEAF));
         params.is_ca = IsCa::ExplicitNoCa;
         params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
@@ -463,7 +471,10 @@ impl Minter {
             vec![certificate.der().clone()],
             self.signing.clone(),
         ));
-        self.minted.lock().unwrap().insert(name, leaf.clone());
+        self.minted
+            .lock()
+            .unwrap()
+            .insert(name, (leaf.clone(), now));
         Ok(leaf)
     }
 }
@@ -690,5 +701,26 @@ mod tests {
         DeviceCa::delete_in(&folder).unwrap();
         assert!(DeviceCa::load_from(&folder, &[]).unwrap().is_none());
         fs::remove_dir_all(&folder).ok();
+    }
+
+    #[test]
+    fn a_long_session_gets_new_certificates_as_it_goes() {
+        let ca = DeviceCa::generate(&[]).unwrap();
+        let minter = ca
+            .minter(&names(&["shop.test"]), SystemTime::now() + 30 * 24 * HOUR)
+            .unwrap();
+        let first = minter.leaf("shop.test").unwrap();
+        assert!(Arc::ptr_eq(&first, &minter.leaf("shop.test").unwrap()));
+        // Half a day later: a new one, valid a day again.
+        minter
+            .minted
+            .lock()
+            .unwrap()
+            .get_mut("shop.test")
+            .unwrap()
+            .1 = SystemTime::now() - 13 * HOUR;
+        let renewed = minter.leaf("shop.test").unwrap();
+        assert!(!Arc::ptr_eq(&first, &renewed));
+        verify(&ca, &renewed.cert[0], "shop.test").unwrap();
     }
 }

@@ -725,3 +725,19 @@ async fn the_same_device_joining_again_takes_its_own_place() {
     second.close().await;
     session.share.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_without_a_time_limit_outlives_its_invitation_on_the_control_plane() {
+    let unlimited = Duration::from_secs(devshare_core::protocol::NO_LIMIT);
+    let session = session(unlimited, 3).await;
+    // The control plane keeps a code a day at most; the session goes on.
+    assert!(session.share.remaining() > Duration::from_secs(365 * 24 * 3600));
+    let link = GuestLink::join(&session.share.code(), &session.server, device("night"))
+        .await
+        .unwrap();
+    assert!(devshare_core::protocol::unlimited(
+        link.manifest.session.expires_in
+    ));
+    link.close().await;
+    session.share.stop().await;
+}
