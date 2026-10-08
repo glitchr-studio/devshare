@@ -99,6 +99,10 @@ dmg:
 		npx --yes @tauri-apps/cli@2 build
 	rm -rf dist/DevShare.app dist/dmg && mkdir -p dist/dmg
 	cp -R target-macos/release/bundle/macos/DevShare.app dist/DevShare.app
+	# The helper goes beside the app's executable: the app installs it from
+	# there, the system asking for an administrator's password.
+	env -u SDKROOT PATH="$$(brew --prefix rustup)/bin:$$PATH" cargo build -q --release -p devshare-helper --target-dir target-macos
+	cp target-macos/release/devshare-helper dist/DevShare.app/Contents/MacOS/
 	cp -R dist/DevShare.app dist/dmg/ && ln -s /Applications dist/dmg/Applications
 	hdiutil create -quiet -ov -fs HFS+ -volname DevShare -srcfolder dist/dmg \
 		dist/DevShare-$$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)-$$(uname -m).dmg

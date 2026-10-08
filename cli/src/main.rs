@@ -537,13 +537,6 @@ async fn join(server: Option<String>, invitation: &str, trust_names: bool) -> Re
 fn ca(action: CaAction) -> Result<()> {
     let settings = Settings::load()?;
     let domains = [settings.domain()];
-    #[cfg(not(target_os = "macos"))]
-    let helper = || {
-        guest::Helper::connect()?.context(
-            "trusting a certificate authority goes through DevShare's helper, which is not \
-             installed: sudo devshare-helper install",
-        )
-    };
     match action {
         CaAction::Status => {
             let Some(ca) = DeviceCa::load(&domains)? else {
@@ -571,17 +564,10 @@ fn ca(action: CaAction) -> Result<()> {
             }
         }
         CaAction::Install => {
-            let ca = match DeviceCa::load(&domains)? {
-                Some(ca) => ca,
-                None => DeviceCa::create(&domains)?,
-            };
-            #[cfg(target_os = "macos")]
-            {
+            if cfg!(target_os = "macos") {
                 println!("macOS asks for your password to change your trust settings, once.");
-                ca.trust_for_this_user()?;
             }
-            #[cfg(not(target_os = "macos"))]
-            helper()?.trust_ca(ca.certificate_pem())?;
+            let ca = devshare_core::ca::manage::install(&domains)?;
             println!(
                 "This computer trusts {} for {}.",
                 clean(ca.common_name(), 120),
@@ -600,45 +586,18 @@ fn ca(action: CaAction) -> Result<()> {
             }
         }
         CaAction::Renew => {
-            let old = DeviceCa::load(&domains)?;
-            let new = DeviceCa::generate(&domains)?;
-            // Trusted before it is kept, the old one untrusted last: a step
-            // that fails leaves a working authority behind.
-            #[cfg(target_os = "macos")]
-            {
-                new.trust_for_this_user()?;
-                new.save()?;
-                if let Some(old) = old.filter(DeviceCa::trusted) {
-                    old.untrust_for_this_user()?;
-                }
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                let mut helper = helper()?;
-                helper.trust_ca(new.certificate_pem())?;
-                new.save()?;
-                if let Some(old) = old.filter(DeviceCa::trusted) {
-                    helper.untrust_ca(old.sha256())?;
-                }
-            }
+            let new = devshare_core::ca::manage::renew(&domains)?;
             println!(
                 "Renewed: this computer trusts {} in place of the earlier one.",
                 clean(new.common_name(), 120)
             );
         }
         CaAction::Remove => {
-            let Some(ca) = DeviceCa::load(&domains)? else {
+            if devshare_core::ca::manage::remove(&domains)? {
+                println!("Removed: this computer no longer trusts it, and its key is deleted.");
+            } else {
                 println!("This device has no certificate authority of its own.");
-                return Ok(());
-            };
-            if ca.trusted() {
-                #[cfg(target_os = "macos")]
-                ca.untrust_for_this_user()?;
-                #[cfg(not(target_os = "macos"))]
-                helper()?.untrust_ca(ca.sha256())?;
             }
-            DeviceCa::delete()?;
-            println!("Removed: this computer no longer trusts it, and its key is deleted.");
         }
     }
     Ok(())

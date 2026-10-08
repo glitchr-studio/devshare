@@ -339,6 +339,84 @@ impl DeviceCa {
     }
 }
 
+/// What `devshare ca` and the desktop app do with this device's authority:
+/// make it and have the computer trust it, replace it, remove it. On macOS
+/// trust is the user's own setting, in their login keychain; elsewhere the
+/// privileged helper installs it in the system's store.
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+pub mod manage {
+    #[cfg(not(target_os = "macos"))]
+    use anyhow::Context;
+    use anyhow::Result;
+
+    use super::DeviceCa;
+
+    /// Makes the authority if there is none, and has this computer trust it.
+    pub fn install(domains: &[String]) -> Result<DeviceCa> {
+        let ca = match DeviceCa::load(domains)? {
+            Some(ca) => ca,
+            None => DeviceCa::create(domains)?,
+        };
+        trust(&ca)?;
+        Ok(ca)
+    }
+
+    /// Replaces the authority with a new one, trusted in its place. The new
+    /// one is trusted before it is kept and the old one untrusted last: a
+    /// step that fails leaves a working authority behind.
+    pub fn renew(domains: &[String]) -> Result<DeviceCa> {
+        let old = DeviceCa::load(domains).ok().flatten();
+        let new = DeviceCa::generate(domains)?;
+        trust(&new)?;
+        new.save()?;
+        if let Some(old) = old.filter(DeviceCa::trusted) {
+            untrust(&old)?;
+        }
+        Ok(new)
+    }
+
+    /// Stops trusting the authority and deletes it. False when there was
+    /// none.
+    pub fn remove(domains: &[String]) -> Result<bool> {
+        let Some(ca) = DeviceCa::load(domains)? else {
+            return Ok(false);
+        };
+        if ca.trusted() {
+            untrust(&ca)?;
+        }
+        DeviceCa::delete()?;
+        Ok(true)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn trust(ca: &DeviceCa) -> Result<()> {
+        ca.trust_for_this_user()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn untrust(ca: &DeviceCa) -> Result<()> {
+        ca.untrust_for_this_user()
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn trust(ca: &DeviceCa) -> Result<()> {
+        helper()?.trust_ca(ca.certificate_pem()).map(|_| ())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn untrust(ca: &DeviceCa) -> Result<()> {
+        helper()?.untrust_ca(ca.sha256())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn helper() -> Result<crate::guest::Helper> {
+        crate::guest::Helper::connect()?.context(
+            "trusting a certificate authority goes through DevShare's helper, which is not \
+             installed: sudo devshare-helper install",
+        )
+    }
+}
+
 /// The certificates of one session, minted the first time a name is asked
 /// for and kept until the session ends. One key signs for all of them.
 pub struct Minter {

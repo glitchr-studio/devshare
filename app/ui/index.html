@@ -15,7 +15,7 @@
     <p id="ended" class="notice" hidden></p>
 
     <section id="undeclared" hidden>
-      <p>No project yet. Add the folder of a project that has a Docker Compose file: DevShare reads the ports it publishes.</p>
+      <p>No project yet. Add one below: DevShare reads the ports a project publishes from its Docker Compose file, its Vite or its Symfony configuration.</p>
     </section>
 
     <form id="choose" hidden>
@@ -58,7 +58,43 @@
       </form>
       <p id="added" class="muted"></p>
       <ul id="problems" class="problems"></ul>
-      <p class="muted">Each project keeps its environments in its own folder, in <code>devshare.toml</code>. What is common to all of them, such as the usual duration, is in <code id="path"></code>.</p>
+      <div id="found" hidden>
+        <h3>Found on this computer</h3>
+        <ul id="candidates" class="candidates"></ul>
+      </div>
+    </section>
+
+    <section class="computer">
+      <h2>This computer</h2>
+      <ul class="facts">
+        <li>
+          <div><strong>Helper</strong><span id="helper-state" class="muted"></span></div>
+          <button id="helper-install" type="button" hidden>Install</button>
+        </li>
+        <li>
+          <div><strong>Certificate authority</strong><span id="authority-state" class="muted"></span></div>
+          <span class="actions">
+            <button id="authority-install" type="button" hidden>Install</button>
+            <button id="authority-renew" type="button" hidden>Renew</button>
+            <button id="authority-remove" type="button" hidden>Remove</button>
+          </span>
+        </li>
+      </ul>
+      <p id="computer-error" class="error" role="alert"></p>
+    </section>
+
+    <section class="settings">
+      <h2>Settings</h2>
+      <form id="settings">
+        <label>Usual duration <input name="duration" type="text" placeholder="5m" spellcheck="false"></label>
+        <label>Usual number of guests <input name="guests" type="number" min="1" max="50" placeholder="3"></label>
+        <label>Domain of new projects <input name="domain" type="text" placeholder="test" spellcheck="false"></label>
+        <label>Relay <input name="relay" type="text" placeholder="iroh's public relays" spellcheck="false"></label>
+        <label>Control plane <input name="server" type="text" placeholder="http://localhost:8787" spellcheck="false"></label>
+        <label>Invitation page <input name="join" type="text" placeholder="https://join.glitchr.dev" spellcheck="false"></label>
+        <p class="settings-actions"><button type="submit">Save</button> <span id="settings-said" class="muted"></span></p>
+      </form>
+      <p class="muted">Common to all your projects, kept in <code id="path"></code>; each project keeps its own environments in its folder, in <code>devshare.toml</code>. An empty field means the default.</p>
     </section>
   </main>
 

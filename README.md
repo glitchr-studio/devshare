@@ -193,9 +193,14 @@ hand.
 
 ## The desktop app
 
-`app/` is the same thing with a window (Tauri): pick projects, share, see who
-is connected by their computer's login, disconnect someone, stop. It also
-joins: paste an invitation, or click "Open in the DevShare app" on an
+`app/` is the same thing with a window (Tauri): pick projects, share them
+together or one alone, start a project that is not running (`docker compose
+up -d` in its folder), see who is connected by their computer's login,
+disconnect someone, stop. It lists the projects found on the computer (in
+`~/Sites` and the like, and next to the projects already added) to add in one
+click, edits the general settings in place, installs the helper (the system
+asks for an administrator's password) and installs, renews or removes the
+device's certificate authority: no terminal needed. It also joins: paste an invitation, or click "Open in the DevShare app" on an
 invitation page, which hands it over through a `devshare://` link. The app
 then shows the invitation and waits for a click: a page can never make it
 join a session on its own. Joining uses the helper, like `devshare join`

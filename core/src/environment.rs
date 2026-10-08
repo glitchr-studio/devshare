@@ -29,7 +29,8 @@ pub const DEFAULT_JOIN: &str = "https://join.glitchr.dev";
 pub const DEFAULT_DOMAIN: &str = "test";
 
 /// General settings, common to every project of this user. This file is the
-/// user's: DevShare reads it and never writes in it, and nothing about one
+/// user's: DevShare writes in it only when its owner changes a setting in
+/// the app, and then only that setting, comments kept. Nothing about one
 /// project in particular belongs there.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -56,6 +57,43 @@ pub struct Settings {
     /// empty, they point at the control plane instead.
     #[serde(default)]
     pub join: Option<String>,
+}
+
+/// Removes `key` from a settings file. The comments written above it are
+/// its owner's: they go to the key that followed, or to the end of the file.
+fn remove_keeping_comments(document: &mut toml_edit::DocumentMut, key: &str) {
+    let keys: Vec<String> = document.iter().map(|(name, _)| name.to_string()).collect();
+    let Some(position) = keys.iter().position(|name| name == key) else {
+        return;
+    };
+    let above = document
+        .as_table()
+        .key(key)
+        .and_then(|key| key.leaf_decor().prefix())
+        .and_then(|prefix| prefix.as_str())
+        .unwrap_or_default()
+        .to_string();
+    document.remove(key);
+    if !above.contains('#') {
+        return;
+    }
+    match keys.get(position + 1) {
+        Some(next) => {
+            if let Some(mut next) = document.as_table_mut().key_mut(next) {
+                let own = next
+                    .leaf_decor()
+                    .prefix()
+                    .and_then(|prefix| prefix.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                next.leaf_decor_mut().set_prefix(format!("{above}{own}"));
+            }
+        }
+        None => {
+            let trailing = document.trailing().as_str().unwrap_or_default().to_string();
+            document.set_trailing(format!("{above}{trailing}"));
+        }
+    }
 }
 
 impl Settings {
@@ -121,6 +159,58 @@ impl Settings {
         // Said now rather than when a session starts.
         settings.duration()?;
         Ok(settings)
+    }
+
+    /// Writes these settings to the user's file. See [`Settings::save_to`].
+    pub fn save(&self) -> Result<()> {
+        self.save_to(&Self::file())
+    }
+
+    /// Writes these settings to `path`, changing nothing else in it: its
+    /// comments and its layout stay. A setting that is `None` is removed,
+    /// and its default applies. A new file starts from [`Settings::TEMPLATE`].
+    pub fn save_to(&self, path: &Path) -> Result<()> {
+        self.duration()?;
+        if self.guests == Some(0) {
+            bail!("a session accepts at least one guest");
+        }
+        if let Some(domain) = &self.domain {
+            if !crate::protocol::names::is_hostname(domain.trim_matches('.')) {
+                bail!("\"{}\" is not a domain", crate::protocol::clean(domain, 80));
+            }
+        }
+        let existing = std::fs::read_to_string(path).unwrap_or_else(|_| Self::TEMPLATE.to_string());
+        let mut document: toml_edit::DocumentMut = existing
+            .parse()
+            .with_context(|| format!("{} is not valid TOML", path.display()))?;
+        let text =
+            |value: &Option<String>| value.as_ref().map(|value| toml_edit::value(value.trim()));
+        let values = [
+            ("server", text(&self.server)),
+            ("duration", text(&self.duration)),
+            (
+                "guests",
+                self.guests
+                    .map(|guests| toml_edit::value(i64::from(guests))),
+            ),
+            ("domain", text(&self.domain)),
+            ("relay", text(&self.relay)),
+            ("join", text(&self.join)),
+        ];
+        for (key, value) in values {
+            match value {
+                Some(value) => {
+                    document[key] = value;
+                }
+                None => remove_keeping_comments(&mut document, key),
+            }
+        }
+        if let Some(folder) = path.parent() {
+            std::fs::create_dir_all(folder)
+                .with_context(|| format!("creating {}", folder.display()))?;
+        }
+        std::fs::write(path, document.to_string())
+            .with_context(|| format!("writing {}", path.display()))
     }
 
     pub fn duration(&self) -> Result<Duration> {
@@ -439,5 +529,55 @@ mod tests {
         assert!(Settings::load_from(&file).is_err());
 
         std::fs::remove_dir_all(&folder).ok();
+    }
+
+    #[test]
+    fn saving_changes_the_settings_and_keeps_the_owner_s_comments() {
+        let path =
+            std::env::temp_dir().join(format!("devshare-settings-{}.toml", std::process::id()));
+        std::fs::write(
+            &path,
+            "# my own note\nduration = \"5m\" # short\nrelay = \"disabled\"\n",
+        )
+        .unwrap();
+        let settings = Settings {
+            duration: Some("2h".into()),
+            guests: Some(4),
+            domain: Some("local".into()),
+            relay: None,
+            ..Settings::load_from(&path).unwrap()
+        };
+        settings.save_to(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# my own note"), "{text}");
+        assert!(text.contains("duration = \"2h\""), "{text}");
+        assert!(!text.contains("relay"), "{text}");
+        assert_eq!(Settings::load_from(&path).unwrap(), settings);
+
+        let wrong = Settings {
+            duration: Some("soon".into()),
+            ..Settings::default()
+        };
+        assert!(wrong.save_to(&path).is_err());
+        assert_eq!(
+            Settings::load_from(&path).unwrap(),
+            settings,
+            "a refused change writes nothing"
+        );
+
+        // No file yet: the commented template, then the setting.
+        std::fs::remove_file(&path).unwrap();
+        Settings {
+            guests: Some(2),
+            ..Settings::default()
+        }
+        .save_to(&path)
+        .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("# How long a session lasts") && text.contains("guests = 2"),
+            "{text}"
+        );
+        std::fs::remove_file(&path).ok();
     }
 }

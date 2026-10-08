@@ -26,6 +26,7 @@ hkdf = "0.13"
 hmac = "0.13"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 toml = "0.8"
+toml_edit = "0.22"
 serde_yaml_ng = "0.10"
 gethostname = "1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

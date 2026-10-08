@@ -873,6 +873,73 @@ fn scalar(value: &Value) -> Option<String> {
     }
 }
 
+/// Whether a folder is a project discovery can read: a compose file, a Vite
+/// configuration, or a Symfony application.
+pub fn is_project(directory: &Path) -> bool {
+    has_compose_file(directory)
+        || local::vite(directory, "").is_some()
+        || local::symfony(directory).is_some()
+}
+
+/// The folders that hold projects, by where a developer keeps them: the
+/// folders `known` projects sit in, then the usual ones under the home
+/// folder. The projects found there, `known` ones left out, sorted by name.
+pub fn candidates(known: &[PathBuf], home: &Path) -> Vec<PathBuf> {
+    const USUAL: [&str; 9] = [
+        "Sites",
+        "Projects",
+        "projects",
+        "Developer",
+        "Code",
+        "code",
+        "src",
+        "dev",
+        "workspace",
+    ];
+    /// Enough for any developer's folder, few enough to read in a moment.
+    const MOST: usize = 300;
+
+    let known: Vec<PathBuf> = known
+        .iter()
+        .map(|folder| folder.canonicalize().unwrap_or_else(|_| folder.clone()))
+        .collect();
+    let mut roots: Vec<PathBuf> = known
+        .iter()
+        .filter_map(|folder| folder.parent().map(Path::to_path_buf))
+        .collect();
+    roots.extend(USUAL.iter().map(|name| home.join(name)));
+
+    let mut found = Vec::new();
+    let mut seen = Vec::new();
+    for root in roots {
+        let Ok(root) = root.canonicalize() else {
+            continue;
+        };
+        if seen.contains(&root) {
+            continue;
+        }
+        seen.push(root.clone());
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let hidden = entry.file_name().to_string_lossy().starts_with('.');
+            if hidden || !path.is_dir() || known.contains(&path) || found.contains(&path) {
+                continue;
+            }
+            if is_project(&path) {
+                found.push(path);
+            }
+            if found.len() >= MOST {
+                break;
+            }
+        }
+    }
+    found.sort_by_key(|path| path.file_name().map(|name| name.to_ascii_lowercase()));
+    found
+}
+
 /// Whether a folder holds a compose file under one of its standard names.
 pub fn has_compose_file(directory: &Path) -> bool {
     COMPOSE_FILES

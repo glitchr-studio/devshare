@@ -602,3 +602,28 @@ fn the_project_names_itself_in_its_environment() {
     assert_eq!(discover(&folder, &chosen).unwrap().hostname, "mine.test");
     std::fs::remove_dir_all(&folder).ok();
 }
+
+#[test]
+fn projects_are_found_where_the_known_ones_are_and_in_the_usual_folders() {
+    let home = files(
+        "home",
+        &[
+            ("Sites/shop/compose.yaml", "services: {}\n"),
+            ("Sites/blog/vite.config.ts", "export default {}\n"),
+            ("Sites/notes/README.md", "not a project\n"),
+            ("Sites/.hidden/compose.yaml", "services: {}\n"),
+            ("work/api/symfony.lock", "{}"),
+            ("work/known/compose.yaml", "services: {}\n"),
+            ("elsewhere/lost/compose.yaml", "services: {}\n"),
+        ],
+    );
+    let found = devshare_core::discover::candidates(&[home.join("work/known")], &home);
+    let names: Vec<String> = found
+        .iter()
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    // work/ because a known project sits there, Sites/ as a usual folder;
+    // known ones, hidden ones and folders that are no project are left out.
+    assert_eq!(names, ["api", "blog", "shop"]);
+    std::fs::remove_dir_all(&home).ok();
+}

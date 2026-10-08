@@ -141,13 +141,7 @@ fn declared<R: Runtime>(app: AppHandle<R>) -> Result<Declared, String> {
 fn add_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<String, String> {
     let folder = PathBuf::from(path.trim());
     let by_hand = folder.join(discover::FILE).is_file();
-    let options = discover::Options {
-        hostname: None,
-        domain: Settings::load().ok().map(|settings| settings.domain()),
-        environment: std::env::vars().collect(),
-        hosts: Some("/etc/hosts".into()),
-    };
-    let name = match discover::discover(&folder, &options) {
+    let name = match discover::discover(&folder, &discovery_options()) {
         Ok(found) => {
             if let Err(error) = discover::write(&folder, &found, false) {
                 // A file written by hand stays; anything else is a refusal.
@@ -168,6 +162,242 @@ fn add_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<String, St
         .add(&folder)
         .map_err(|error| format!("{error:#}"))?;
     Ok(name)
+}
+
+/// A project found on this computer and not on the list yet.
+#[derive(Serialize)]
+struct Candidate {
+    folder: String,
+    name: String,
+    /// The name guests would reach it under.
+    hostname: Option<String>,
+}
+
+fn discovery_options() -> discover::Options {
+    discover::Options {
+        hostname: None,
+        domain: Settings::load().ok().map(|settings| settings.domain()),
+        environment: std::env::vars().collect(),
+        hosts: Some("/etc/hosts".into()),
+    }
+}
+
+/// The projects found where projects are kept, those already added left out.
+#[tauri::command]
+async fn candidates<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Candidate>, String> {
+    let known = projects(&app)?.folders();
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        let options = discovery_options();
+        discover::candidates(&known, &home)
+            .into_iter()
+            .map(|folder| {
+                let found = discover::discover(&folder, &options).ok();
+                Candidate {
+                    name: found
+                        .as_ref()
+                        .map(|found| found.project.clone())
+                        .or_else(|| {
+                            folder
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                        })
+                        .unwrap_or_default(),
+                    hostname: found.map(|found| found.hostname),
+                    folder: folder.display().to_string(),
+                }
+            })
+            .collect()
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// The environments whose services answer on this machine: the others are
+/// not started.
+#[tauri::command]
+async fn running<R: Runtime>(app: AppHandle<R>) -> Result<Vec<String>, String> {
+    let config = projects(&app)?.declared().config;
+    tauri::async_runtime::spawn_blocking(move || {
+        config
+            .environments
+            .iter()
+            .filter(|(_, environment)| {
+                environment.services.iter().any(|service| {
+                    let target = service
+                        .target
+                        .clone()
+                        .unwrap_or_else(|| format!("127.0.0.1:{}", service.port));
+                    std::net::ToSocketAddrs::to_socket_addrs(&target)
+                        .ok()
+                        .and_then(|mut addresses| addresses.next())
+                        .is_some_and(|address| {
+                            std::net::TcpStream::connect_timeout(
+                                &address,
+                                Duration::from_millis(300),
+                            )
+                            .is_ok()
+                        })
+                })
+            })
+            .map(|(name, _)| name.clone())
+            .collect()
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// Starts a project's services: `docker compose up -d` in its folder.
+#[tauri::command]
+async fn start_project(path: String) -> Result<(), String> {
+    let folder = PathBuf::from(path);
+    if !discover::has_compose_file(&folder) {
+        return Err("this project has no compose file: start it as you usually do".into());
+    }
+    let output = tokio::process::Command::new(crate::system::program("docker"))
+        .args(["compose", "up", "-d"])
+        .current_dir(&folder)
+        .output()
+        .await
+        .map_err(|error| {
+            format!("Docker could not be run ({error}): is Docker Desktop installed?")
+        })?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let said = String::from_utf8_lossy(&output.stderr);
+    let last: Vec<&str> = said
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    Err(last[last.len().saturating_sub(4)..].join("\n"))
+}
+
+/// The general settings as they are written, and the defaults that apply
+/// where nothing is.
+#[derive(Serialize, serde::Deserialize)]
+struct SettingsView {
+    server: Option<String>,
+    duration: Option<String>,
+    guests: Option<u32>,
+    domain: Option<String>,
+    relay: Option<String>,
+    join: Option<String>,
+}
+
+#[tauri::command]
+fn settings() -> Result<SettingsView, String> {
+    let settings = Settings::load().map_err(|error| format!("{error:#}"))?;
+    Ok(SettingsView {
+        server: settings.server,
+        duration: settings.duration,
+        guests: settings.guests,
+        domain: settings.domain,
+        relay: settings.relay,
+        join: settings.join,
+    })
+}
+
+/// Saves the general settings. An empty field is removed from the file,
+/// and its default applies; the file's comments stay.
+#[tauri::command]
+fn save_settings(values: SettingsView) -> Result<(), String> {
+    let filled = |value: Option<String>| {
+        value
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    Settings {
+        server: filled(values.server),
+        duration: filled(values.duration),
+        guests: values.guests,
+        domain: filled(values.domain),
+        relay: filled(values.relay),
+        join: filled(values.join),
+    }
+    .save()
+    .map_err(|error| format!("{error:#}"))
+}
+
+/// What this computer has for joining sessions: the helper, the device's
+/// certificate authority.
+#[derive(Serialize)]
+struct Computer {
+    /// `ready`, `absent`, or why the helper does not serve this user.
+    helper: String,
+    authority: Option<Authority>,
+}
+
+#[derive(Serialize)]
+struct Authority {
+    name: String,
+    trusted: bool,
+    domains: Vec<String>,
+    days_left: i64,
+    /// Whether it may vouch for the domain of the settings: an authority
+    /// made before that domain was chosen does not, until renewed.
+    covers_domain: bool,
+}
+
+fn domains() -> Vec<String> {
+    vec![Settings::load().unwrap_or_default().domain()]
+}
+
+#[tauri::command]
+async fn computer() -> Result<Computer, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let helper = match devshare_core::guest::Helper::connect() {
+            Ok(Some(_)) => "ready".to_string(),
+            Ok(None) => "absent".to_string(),
+            Err(error) => format!("{error:#}"),
+        };
+        let domain = Settings::load().unwrap_or_default().domain();
+        let authority = devshare_core::ca::DeviceCa::load(&domains())
+            .ok()
+            .flatten()
+            .map(|ca| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_secs() as i64)
+                    .unwrap_or_default();
+                Authority {
+                    name: ca.common_name().to_string(),
+                    trusted: ca.trusted(),
+                    covers_domain: ca.covers(&format!("project.{domain}")),
+                    domains: ca.domains().to_vec(),
+                    days_left: (ca.not_after() - now) / 86_400,
+                }
+            });
+        Computer { helper, authority }
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// Installs the helper: the system asks for an administrator's password.
+#[tauri::command]
+async fn install_helper() -> Result<(), String> {
+    crate::system::install_helper().await
+}
+
+/// `install`, `renew` or `remove` this device's certificate authority. On
+/// macOS the system asks for the user's password.
+#[tauri::command]
+async fn authority(action: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let domains = domains();
+        let done = match action.as_str() {
+            "install" => devshare_core::ca::manage::install(&domains).map(|_| ()),
+            "renew" => devshare_core::ca::manage::renew(&domains).map(|_| ()),
+            "remove" => devshare_core::ca::manage::remove(&domains).map(|_| ()),
+            other => return Err(format!("no such action: {other}")),
+        };
+        done.map_err(|error| format!("{error:#}"))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// Takes a project off the list. Its folder is left as it is.
@@ -335,7 +565,15 @@ pub fn create<R: Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
             join,
             leave,
             open,
-            handed
+            handed,
+            candidates,
+            running,
+            start_project,
+            settings,
+            save_settings,
+            computer,
+            install_helper,
+            authority
         ])
         .build(tauri::generate_context!())
         .expect("the DevShare window could not be created")

@@ -179,3 +179,28 @@ pre {
 .joined li .mono { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .joined .tag { font-size: 10px; letter-spacing: 0.04em; color: var(--muted); }
 .joined .tag.certified { color: var(--present); }
+
+/* Found projects, this computer, settings */
+
+.add h3 { margin: 12px 0 6px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.candidates li { display: flex; gap: 10px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.candidates li:first-child { border-top: 1px solid var(--line); }
+.candidates .who { flex: 1; min-width: 0; }
+.candidates strong { font-weight: 600; margin-right: 8px; }
+.candidates .folder { display: block; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.computer, .settings { margin-top: 10px; }
+.facts li { display: flex; gap: 12px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.facts li:first-child { border-top: 1px solid var(--line); }
+.facts li > div { flex: 1; min-width: 0; }
+.facts strong { font-weight: 600; display: block; }
+.computer .error { white-space: pre-wrap; }
+
+#settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; margin-bottom: 8px; }
+#settings label { display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: 12px; }
+#settings input { width: 100%; color: var(--ink); -webkit-user-select: text; user-select: text; }
+.settings-actions { grid-column: 1 / -1; margin: 4px 0 0; }
+.settings > p.muted { margin-bottom: 20px; }
+
+.environments .row-actions { display: flex; gap: 6px; }
+.environments .stopped { color: var(--attention); font-size: 11px; display: block; }
