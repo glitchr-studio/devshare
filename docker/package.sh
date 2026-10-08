@@ -11,9 +11,9 @@ for arch in x86_64:amd64 aarch64:arm64; do
     target="${arch%%:*}-unknown-linux-gnu"
     name="${arch##*:}"
 
-    cargo zigbuild --release -p devshare-cli --target "$target.$GLIBC"
+    cargo zigbuild --release -p devshare-cli -p devshare-helper --target "$target.$GLIBC"
     cargo deb -p devshare-cli --no-build --no-strip --target "$target" \
         --output "dist/devshare_${version}_${name}.deb"
-    tar -C "target/$target/release" -czf "dist/devshare-${version}-linux-${name}.tar.gz" devshare
+    tar -C "target/$target/release" -czf "dist/devshare-${version}-linux-${name}.tar.gz" devshare devshare-helper
 done
 ls -l dist

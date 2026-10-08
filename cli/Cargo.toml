@@ -39,6 +39,9 @@ encrypted peer-to-peer link. Nothing is deployed and nothing else on the \
 machine becomes reachable."""
 assets = [
     ["target/release/devshare", "usr/bin/", "755"],
+    # The part that needs root, so that joining does not: installed with
+    # `sudo devshare-helper install`, nothing runs as root until then.
+    ["target/release/devshare-helper", "usr/bin/", "755"],
 ]
 
 [dev-dependencies]

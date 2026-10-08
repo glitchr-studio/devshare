@@ -74,13 +74,72 @@ make demo             # starts the example project and shares it
 ```
 
 `make demo` runs the small project in [tests/showcase](tests/showcase) and
-prints its invitation. On another computer with DevShare:
+prints its invitation: a link, and the same link as a QR code. Keep that
+terminal open; Ctrl-C stops the session. Then join it from another device,
+as below, and open `http://showcase.test:8710`.
 
-```sh
-sudo devshare join <invitation>
-```
+## Testing on each kind of device
 
-then open `http://showcase.test:8710`.
+The link works from any network: the devices connect directly when their
+networks allow it, through a relay otherwise. Nothing needs to be opened on
+either side's router. In the terminal of `make demo`, `guests` lists who is
+connected and `revoke <number>` disconnects one.
+
+### A computer: macOS or Linux
+
+1. Install DevShare on it. On a Mac, as above: `make install`, then
+   `source env.sh`. For Linux, `make deb` (on any machine with Docker)
+   builds packages into `dist/`; on the Linux computer:
+   `sudo apt install ./devshare_<version>_amd64.deb` (or `_arm64`).
+2. Once, `sudo devshare-helper install`: from then on, joining needs no
+   sudo. Without it, join with `sudo devshare join …` each time.
+3. `devshare join '<invitation>'`. It says `Connected.`, lists what is
+   shared, and whether the link is direct or relayed.
+4. Open `http://showcase.test:8710` in any browser, or
+   `curl http://showcase.test:8710`.
+5. Ctrl-C leaves. `showcase.test` stops resolving at once.
+
+To check HTTPS without a warning, run `devshare ca install` once (on macOS
+it asks for your password), then join a session that shares an HTTPS
+service: `devshare join` marks it `certified by this device`, and the
+browser opens it without a warning.
+
+The desktop app does the same on a Mac: `make dmg`, copy
+`dist/DevShare.app` to Applications, then paste the invitation under "Join
+a session", or open the invitation link in the browser and click "Open in
+the DevShare app".
+
+Windows is not supported yet.
+
+### An iPhone or an iPad
+
+The app is not in the App Store yet: it is installed from a Mac with Xcode,
+on a device with iOS 17 or later and Developer Mode on (Settings, Privacy &
+Security, Developer Mode).
+
+1. On the Mac: `make ios-app`, then open `ios/DevShare.xcodeproj`.
+2. Connect the device, choose it at the top of Xcode's window, and press
+   Run (⌘R). The app opens on the device.
+3. In the app, tap **Scan a QR code** and scan the code `make demo`
+   printed, or paste the link. Use the app's own scanner: the Camera app
+   opens the invitation page in Safari instead, which can only show the
+   code.
+4. Tap **Join**, then `showcase.test:8710`: it opens in the app's browser.
+
+Only the app's own browser reaches the shared names; Safari and the other
+apps of the device do not. HTTPS services are accepted when their
+certificate is the one the host saw, with nothing to install.
+
+### An Android phone or tablet
+
+There is no Android app yet. Scanning the QR code with the camera opens the
+invitation page in the browser, which shows the code and says so: that page
+is all an Android device can check today.
+
+### A tablet
+
+An iPad uses the iPhone app, as above. An Android tablet is in the same
+place as an Android phone.
 
 ## Joining without sudo
 
