@@ -208,7 +208,10 @@ left: the ones found in the folders it looks in (`~/Sites` and the usual
 ones to start with) and the ones added with + (a folder, a `devshare.toml`
 of any name, or a folder to look in), each with a switch and a dot that says
 whether it runs. A project's page has a live preview of it, its addresses
-(the names guests use, the same ports on localhost to open here), Start and
+(each with what it answers, and for HTTPS whether this Mac trusts its
+certificate: a self-signed one is replaced in one click by one from the
+Mac's own DevShare authority, the originals kept with the app's data; the
+names guests use, the same ports on localhost to open here), Start and
 Stop with the project's own `make up` / `make down` (else Docker Compose,
 else the commands given on the page or in the settings), and its folder.
 "Share and join" shares what is switched on, for the time you choose or with

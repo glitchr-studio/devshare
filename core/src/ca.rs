@@ -461,6 +461,134 @@ pub mod manage {
     }
 }
 
+/// A project's own certificate and key, as files of its folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectCertificate {
+    pub certificate: PathBuf,
+    pub key: PathBuf,
+    /// The names it covers.
+    pub names: Vec<String>,
+}
+
+/// The files a project serves its HTTPS certificate from: the one whose
+/// certificate is exactly `served` (its SHA-256), else, when the project is
+/// not running, one covering a name of `names`. With the key next to it that
+/// goes with it. Dependencies, build output and version control are not
+/// looked into.
+pub fn find_project_certificate(
+    folder: &Path,
+    served: Option<&str>,
+    names: &[String],
+) -> Option<ProjectCertificate> {
+    const SKIPPED: [&str; 8] = [
+        "node_modules",
+        "vendor",
+        ".git",
+        "target",
+        "var",
+        "dist",
+        "build",
+        ".cache",
+    ];
+    fn walk(folder: &Path, depth: usize, found: &mut Vec<PathBuf>) {
+        let Ok(entries) = fs::read_dir(folder) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if depth > 0 && !SKIPPED.contains(&name.as_str()) {
+                    walk(&path, depth - 1, found);
+                }
+            } else if [".crt", ".pem", ".cert", ".cer"]
+                .iter()
+                .any(|ext| name.ends_with(ext))
+                && fs::metadata(&path).is_ok_and(|meta| meta.len() < 64 * 1024)
+            {
+                found.push(path);
+            }
+        }
+    }
+    let mut candidates = Vec::new();
+    walk(folder, 6, &mut candidates);
+    candidates.sort();
+
+    let wanted: Vec<String> = names.iter().map(|name| normalize_host(name)).collect();
+    let read = |path: &Path| -> Option<(String, Vec<String>, Vec<u8>)> {
+        let text = fs::read_to_string(path).ok()?;
+        let (_, block) = x509_parser::pem::parse_x509_pem(text.as_bytes()).ok()?;
+        if block.label != "CERTIFICATE" {
+            return None;
+        }
+        let (_, parsed) = x509_parser::parse_x509_certificate(&block.contents).ok()?;
+        let names = parsed
+            .subject_alternative_name()
+            .ok()
+            .flatten()
+            .map(|san| {
+                san.value
+                    .general_names
+                    .iter()
+                    .filter_map(|name| match name {
+                        x509_parser::extensions::GeneralName::DNSName(name) => {
+                            Some(name.to_ascii_lowercase())
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let spki = parsed.tbs_certificate.subject_pki.raw.to_vec();
+        Some((
+            devshare_protocol::authority::sha256(&block.contents),
+            names,
+            spki,
+        ))
+    };
+    let chosen = candidates.iter().find_map(|path| {
+        let (sha256, covered, spki) = read(path)?;
+        let matches = match served {
+            Some(served) => sha256.eq_ignore_ascii_case(served),
+            None => covered.iter().any(|name| wanted.contains(name)),
+        };
+        matches.then(|| (path.clone(), covered, spki))
+    })?;
+    let (certificate, covered, spki) = chosen;
+    let key = key_beside(&certificate, &spki)?;
+    Some(ProjectCertificate {
+        certificate,
+        key,
+        names: covered,
+    })
+}
+
+/// The private key next to a certificate: the one whose public half is the
+/// certificate's, else the file of the same name with `.key`.
+fn key_beside(certificate: &Path, spki: &[u8]) -> Option<PathBuf> {
+    let folder = certificate.parent()?;
+    let mut keys: Vec<PathBuf> = fs::read_dir(folder)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path != certificate && path.is_file())
+        .filter(|path| fs::read_to_string(path).is_ok_and(|text| text.contains("PRIVATE KEY")))
+        .collect();
+    keys.sort();
+    let matching = keys.iter().find(|path| {
+        fs::read_to_string(path)
+            .ok()
+            .and_then(|text| KeyPair::from_pem(&text).ok())
+            .is_some_and(|key| key.subject_public_key_info() == spki)
+    });
+    if let Some(key) = matching {
+        return Some(key.clone());
+    }
+    // A key rcgen cannot read (RSA, say): by its name.
+    let same = certificate.with_extension("key");
+    keys.into_iter().find(|path| *path == same)
+}
+
 /// The certificates of one session, minted the first time a name is asked
 /// for and kept until the session ends. One key signs for all of them.
 pub struct Minter {
@@ -799,5 +927,38 @@ mod tests {
             .filter(|line| !line.starts_with("-----"))
             .collect();
         CertificateDer::from(STANDARD.decode(body).unwrap())
+    }
+
+    #[test]
+    fn a_project_s_certificate_is_found_by_what_it_serves_or_by_its_names() {
+        let folder =
+            std::env::temp_dir().join(format!("devshare-project-tls-{}", rand::random::<u32>()));
+        let ssl = folder.join("deployments/docker/proxy/ssl");
+        fs::create_dir_all(&ssl).unwrap();
+        fs::create_dir_all(folder.join("vendor/some/lib")).unwrap();
+        let served =
+            rcgen::generate_simple_self_signed(["shop.local".to_string(), "localhost".to_string()])
+                .unwrap();
+        fs::write(ssl.join("localhost.crt"), served.cert.pem()).unwrap();
+        fs::write(
+            ssl.join("localhost.key"),
+            served.signing_key.serialize_pem(),
+        )
+        .unwrap();
+        // A decoy in a dependency, for the same name: never looked at.
+        let decoy = rcgen::generate_simple_self_signed(["shop.local".to_string()]).unwrap();
+        fs::write(folder.join("vendor/some/lib/test.crt"), decoy.cert.pem()).unwrap();
+
+        let sha256 = devshare_protocol::authority::sha256(served.cert.der());
+        let found = find_project_certificate(&folder, Some(&sha256), &[]).unwrap();
+        assert_eq!(found.certificate, ssl.join("localhost.crt"));
+        assert_eq!(found.key, ssl.join("localhost.key"));
+        assert_eq!(found.names, ["shop.local", "localhost"]);
+        // Not running: by the names it covers.
+        let by_name = find_project_certificate(&folder, None, &names(&["shop.local"])).unwrap();
+        assert_eq!(by_name.certificate, ssl.join("localhost.crt"));
+        assert!(find_project_certificate(&folder, Some(&"0".repeat(64)), &[]).is_none());
+        assert!(find_project_certificate(&folder, None, &names(&["other.local"])).is_none());
+        fs::remove_dir_all(&folder).ok();
     }
 }

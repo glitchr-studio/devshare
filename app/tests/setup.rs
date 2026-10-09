@@ -488,5 +488,61 @@ fn the_window_finds_projects_edits_the_settings_and_starts_nothing_it_cannot() {
         json!([{ "path": path, "state": "partial" }])
     );
 
+    // Certifying: a project with no certificate files is told so; with no
+    // DevShare authority on this machine, nothing is replaced.
+    let error = ask(&window, "certify_project", json!({ "path": path })).unwrap_err();
+    assert!(error.as_str().unwrap().contains("not found"), "{error}");
+    let tls = home.join("Sites/tls");
+    let ssl = tls.join("docker/ssl");
+    std::fs::create_dir_all(&ssl).unwrap();
+    std::fs::write(tls.join("devshare.toml"), "[environments.tls]\nservices = [{ host = \"tls.local\", port = 1, target = \"127.0.0.1:1\" }]\n").unwrap();
+    std::fs::write(ssl.join("site.crt"), rcgen_pem("tls.local")).unwrap();
+    std::fs::write(
+        ssl.join("site.key"),
+        "-----BEGIN PRIVATE KEY-----\nnot read\n-----END PRIVATE KEY-----\n",
+    )
+    .unwrap();
+    let before = std::fs::read_to_string(ssl.join("site.crt")).unwrap();
+    let error = ask(
+        &window,
+        "certify_project",
+        json!({ "path": tls.display().to_string() }),
+    )
+    .unwrap_err();
+    assert!(
+        error.as_str().unwrap().contains("no DevShare authority"),
+        "{error}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ssl.join("site.crt")).unwrap(),
+        before,
+        "nothing replaced"
+    );
+
     std::fs::remove_dir_all(&home).ok();
+}
+
+/// A self-signed certificate for `name`, as a project's own.
+fn rcgen_pem(name: &str) -> String {
+    let key = std::process::Command::new("openssl")
+        .args([
+            "req",
+            "-x509",
+            "-newkey",
+            "ec",
+            "-pkeyopt",
+            "ec_paramgen_curve:prime256v1",
+            "-nodes",
+            "-days",
+            "1",
+            "-keyout",
+            "/dev/null",
+            "-subj",
+        ])
+        .arg(format!("/CN={name}"))
+        .arg("-addext")
+        .arg(format!("subjectAltName=DNS:{name}"))
+        .output()
+        .unwrap();
+    String::from_utf8(key.stdout).unwrap()
 }

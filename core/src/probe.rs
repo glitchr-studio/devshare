@@ -165,6 +165,37 @@ async fn first_page(target: &str, authority: &str, tls: bool) -> Option<Vec<u8>>
     Some(page)
 }
 
+/// Whether this machine's own trust store, the one its browsers use,
+/// accepts the certificate `target` presents for `host`. `None` when nothing
+/// answers there with TLS.
+#[cfg(not(target_os = "android"))]
+pub async fn trusted_by_system(target: &str, host: &str) -> Option<bool> {
+    let Ok(Ok(stream)) = tokio::time::timeout(TIMEOUT, TcpStream::connect(target)).await else {
+        return None;
+    };
+    let server_name = ServerName::try_from(host.to_string()).ok()?;
+    let provider = Arc::new(default_provider());
+    let verifier = rustls_platform_verifier::Verifier::new(provider.clone()).ok()?;
+    let config = ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .ok()?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(verifier))
+        .with_no_client_auth();
+    let handshake = TlsConnector::from(Arc::new(config)).connect(server_name, stream);
+    match tokio::time::timeout(TIMEOUT, handshake).await {
+        Ok(Ok(_)) => Some(true),
+        Ok(Err(error)) => {
+            let refused = error
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<rustls::Error>())
+                .is_some_and(|error| matches!(error, rustls::Error::InvalidCertificate(_)));
+            refused.then_some(false)
+        }
+        Err(_) => None,
+    }
+}
+
 pub fn fingerprint(certificate: &[u8]) -> String {
     Sha256::digest(certificate)
         .iter()

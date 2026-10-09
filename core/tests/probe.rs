@@ -246,3 +246,24 @@ async fn pages_that_point_at_this_machine_are_found() {
             .is_empty()
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_system_does_not_trust_a_certificate_signed_by_nobody_it_knows() {
+    let (address, _) = tls_service("shop.local").await;
+    let target = address.to_string();
+    assert_eq!(
+        devshare_core::probe::trusted_by_system(&target, "shop.local").await,
+        Some(false)
+    );
+    // Nothing there with TLS: no verdict.
+    let plain = plain_service().await.to_string();
+    assert_eq!(
+        devshare_core::probe::trusted_by_system(&plain, "shop.local").await,
+        None
+    );
+    let closed = closed_port().await.to_string();
+    assert_eq!(
+        devshare_core::probe::trusted_by_system(&closed, "shop.local").await,
+        None
+    );
+}

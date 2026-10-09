@@ -280,3 +280,5 @@ html:not(.mac) body.no-sidebar .content .bar { padding-left: 52px; }
 .share-dock .primary.sharing { background: var(--present); border-color: var(--present); color: #fff; }
 .share-dock .muted { text-align: center; }
 #project-share-now { padding: 4px 14px; }
+
+#certify-said { white-space: pre-wrap; margin-top: 8px; }

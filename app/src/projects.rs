@@ -214,6 +214,24 @@ impl Projects {
             .with_context(|| format!("writing {}", file.display()))
     }
 
+    /// Keeps a copy of files about to be replaced, with the app's data:
+    /// `kept/<when>/`. Returns that folder.
+    pub fn keep(&self, certificate: &Path, key: &Path) -> Result<PathBuf> {
+        let when = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or_default();
+        let kept = self.folder.join("kept").join(when.to_string());
+        std::fs::create_dir_all(&kept).with_context(|| format!("creating {}", kept.display()))?;
+        for file in [certificate, key] {
+            if let Some(name) = file.file_name() {
+                std::fs::copy(file, kept.join(name))
+                    .with_context(|| format!("keeping {}", file.display()))?;
+            }
+        }
+        Ok(kept)
+    }
+
     pub fn switch(&self, path: &Path, on: bool) -> Result<()> {
         self.put(ON, path, on)
     }

@@ -415,6 +415,8 @@ struct AddressCheck {
     /// `200 OK`, `426 Upgrade Required`, `nothing answers`…
     detail: String,
     tls: bool,
+    /// For HTTPS: whether this Mac's browsers accept its certificate.
+    trusted: Option<bool>,
 }
 
 /// Every address of a project: whether it answers, with what.
@@ -479,13 +481,29 @@ async fn check(host: String, port: u16, target: String, named: bool) -> AddressC
         dialled.replace("127.0.0.1", "localhost")
     };
     let url = format!("{scheme}://{shown}:{target_port}");
-    let answer = |state, detail: String| AddressCheck {
-        host: host.clone(),
-        port,
-        url: url.clone(),
-        state,
-        detail,
-        tls,
+    let trusted = if tls {
+        devshare_core::probe::trusted_by_system(&target, &host).await
+    } else {
+        None
+    };
+    let answer = |state: &'static str, detail: String| {
+        // A page the browsers refuse to show is not quite a page.
+        let (state, detail) = match (state, trusted) {
+            ("ok", Some(false)) => (
+                "error",
+                format!("{detail} · its certificate is not trusted by this Mac"),
+            ),
+            _ => (state, detail),
+        };
+        AddressCheck {
+            host: host.clone(),
+            port,
+            url: url.clone(),
+            state,
+            detail,
+            tls,
+            trusted,
+        }
     };
     if probed == Probe::Down {
         return answer("down", "nothing answers".into());
@@ -558,6 +576,110 @@ async fn check(host: String, port: u16, target: String, named: bool) -> AddressC
     }
     said.push("too many redirects".into());
     answer("error", said.join(" → "))
+}
+
+/// What certifying a project did.
+#[derive(Serialize)]
+struct Certified {
+    certificate: String,
+    key: String,
+    names: Vec<String>,
+    /// Where the files it replaced are kept.
+    kept: String,
+    /// Whether the project's version control tracks the files: they then
+    /// show as changed there, and are not for the rest of its team.
+    tracked: bool,
+}
+
+/// Gives a project a certificate from this Mac's own authority, in place of
+/// the one it serves (self-signed, usually): its browsers then accept it.
+/// The files it replaces are kept with the app's data.
+#[tauri::command]
+async fn certify_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<Certified, String> {
+    use devshare_core::{ca, probe};
+    let path = PathBuf::from(path);
+    let folder = folder_of(&path);
+    let options = discovery_options();
+    let lookup = path.clone();
+    let config = tauri::async_runtime::spawn_blocking(move || config_of(&lookup, &options))
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or("this project cannot be read")?;
+    let services: Vec<_> = config
+        .environments
+        .values()
+        .flat_map(|environment| environment.services.clone())
+        .collect();
+    let names: Vec<String> = services
+        .iter()
+        .map(|service| service.host.clone())
+        .collect();
+    // The certificate it serves now, when it runs.
+    let mut served = None;
+    for service in &services {
+        let target = service
+            .target
+            .clone()
+            .unwrap_or_else(|| format!("127.0.0.1:{}", service.port));
+        if let probe::Probe::Tls { sha256, .. } = probe::probe(&target, &service.host).await {
+            served = Some(sha256);
+            break;
+        }
+    }
+    let settings = Settings::load().unwrap_or_default();
+    let domains = vec![settings.domain()];
+    let data = projects(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let found =
+            ca::find_project_certificate(&folder, served.as_deref(), &names).ok_or_else(|| {
+                "its certificate files were not found in its folder: DevShare looks for the one it \
+             serves, with its key beside it"
+                    .to_string()
+            })?;
+        let authority = ca::DeviceCa::load(&domains)
+            .map_err(|error| format!("{error:#}"))?
+            .ok_or("this Mac has no DevShare authority yet: install it in the settings")?;
+        if !authority.trusted() {
+            return Err(
+                "this Mac does not trust its DevShare authority yet: install it in the settings"
+                    .into(),
+            );
+        }
+        // Its own names and the certificate's, those the authority may vouch for.
+        let mut certified: Vec<String> = Vec::new();
+        for name in names.iter().chain(&found.names) {
+            let name = devshare_core::protocol::normalize_host(name);
+            if authority.covers(&name) && !certified.contains(&name) {
+                certified.push(name);
+            }
+        }
+        let (pem, key) = authority
+            .issue(&certified, 397)
+            .map_err(|error| format!("{error:#}"))?;
+        let kept = data
+            .keep(&found.certificate, &found.key)
+            .map_err(|error| format!("{error:#}"))?;
+        std::fs::write(&found.certificate, pem).map_err(|error| error.to_string())?;
+        std::fs::write(&found.key, key).map_err(|error| error.to_string())?;
+        let tracked = [&found.certificate, &found.key].iter().any(|file| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&folder)
+                .args(["ls-files", "--error-unmatch"])
+                .arg(file)
+                .output()
+                .is_ok_and(|output| output.status.success())
+        });
+        Ok(Certified {
+            certificate: found.certificate.display().to_string(),
+            key: found.key.display().to_string(),
+            names: certified,
+            kept: kept.display().to_string(),
+            tracked,
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// The names this machine's /etc/hosts gives to its loopback.
@@ -970,6 +1092,7 @@ pub fn create<R: Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
             handed,
             running,
             check_project,
+            certify_project,
             run_project,
             settings,
             save_settings,

@@ -238,7 +238,63 @@ async function checkProject(project) {
     ]);
   }));
   preview(project, checks);
+  certifyOffer(project, checks);
 }
+
+// HTTPS this Mac's browsers refuse: the project's own certificate, usually
+// self-signed. This Mac's DevShare authority can issue it one they accept.
+function certifyOffer(project, checks) {
+  const refused = checks.filter((check) => check.tls && check.trusted === false);
+  const stopped = checks.length > 0 && checks.every((check) => check.state === 'down');
+  const https = (project.preview ?? '').startsWith('https');
+  $('certify-section').hidden = refused.length === 0 && !(stopped && https);
+  $('certify-said').textContent = '';
+  $('certify-restart').hidden = true;
+  if (refused.length) {
+    const where = [...new Set(refused.map((check) => `${check.host}:${check.port}`))].join(', ');
+    $('certify-text').textContent = `This Mac does not trust the certificate served on ${where}: browsers warn, and the preview stays empty. This Mac's DevShare authority can issue the project one they accept, for its development names only.`;
+  } else {
+    $('certify-text').textContent = 'Its certificate cannot be checked while the project is stopped. If it is self-signed, this Mac\'s DevShare authority can issue it one the browsers accept, for its development names only.';
+  }
+}
+
+$('certify').addEventListener('click', async () => {
+  const project = currentProject();
+  if (!project) return;
+  const button = $('certify');
+  button.disabled = true;
+  button.textContent = 'Certifying…';
+  $('certify-said').className = 'small';
+  try {
+    const done = await invoke('certify_project', { path: project.folder });
+    const lines = [
+      `Certified for ${done.names.join(', ')}: ${home(done.certificate)}.`,
+      `The files it replaced are kept in ${home(done.kept)}.`,
+    ];
+    if (done.tracked) lines.push('The project\'s git tracks these files: they now show as changed. They are trusted on this Mac only: do not commit them.');
+    const state = states.get(project.folder) ?? 'stopped';
+    if (state !== 'stopped') {
+      lines.push('Restart the project for it to serve the new certificate.');
+      $('certify-restart').hidden = !project.startable;
+    } else {
+      lines.push('The project serves it from its next start.');
+    }
+    $('certify-said').textContent = lines.join('\n');
+  } catch (error) {
+    $('certify-said').className = 'small error';
+    $('certify-said').textContent = String(error);
+  }
+  button.disabled = false;
+  button.textContent = 'Certify with this Mac\'s authority';
+});
+
+$('certify-restart').addEventListener('click', async () => {
+  const project = currentProject();
+  if (!project) return;
+  $('certify-restart').hidden = true;
+  await runProject(project, 'down', $('project-stop'));
+  await runProject(project, 'up', $('project-start'));
+});
 
 function preview(project, checks) {
   const port = project.preview ? Number(new URL(project.preview).port || (project.preview.startsWith('https') ? 443 : 80)) : null;
