@@ -330,6 +330,49 @@ impl DeviceCa {
         removed.or(deleted)
     }
 
+    /// A certificate for a project of this machine to serve itself, for
+    /// `names`, valid `days` (397 at most, what browsers accept), with a key
+    /// of its own: `(certificate, key)` in PEM. Every name must be one this
+    /// authority may vouch for; addresses are not certified.
+    pub fn issue(&self, names: &[String], days: u32) -> Result<(String, String)> {
+        let names: Vec<String> = names
+            .iter()
+            .map(|name| normalize_host(name))
+            .filter(|name| name.parse::<std::net::IpAddr>().is_err())
+            .collect();
+        if names.is_empty() {
+            bail!("no name to certify");
+        }
+        if let Some(name) = names.iter().find(|name| !self.covers(name)) {
+            bail!(
+                "{name} is outside what this authority may vouch for ({}): renew it after \
+                 setting the domain, or certify development names only",
+                self.domains().join(", ")
+            );
+        }
+        let issuer = Issuer::from_ca_cert_pem(&self.pem, KeyPair::from_pem(&self.key_pem)?)?;
+        let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
+        let mut params = CertificateParams::default();
+        let mut subject = DistinguishedName::new();
+        subject.push(DnType::CommonName, names[0].clone());
+        params.distinguished_name = subject;
+        params.subject_alt_names = names
+            .iter()
+            .map(|name| Ok(SanType::DnsName(name.clone().try_into()?)))
+            .collect::<Result<Vec<_>>>()?;
+        params.serial_number = Some(serial());
+        let now = SystemTime::now();
+        params.not_before = OffsetDateTime::from(now - SKEW);
+        let days = u64::from(days.clamp(1, 397));
+        params.not_after = OffsetDateTime::from(now + Duration::from_secs(days * 24 * 3600));
+        params.is_ca = IsCa::ExplicitNoCa;
+        params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        params.use_authority_key_identifier_extension = true;
+        let certificate = params.signed_by(&key, &issuer)?;
+        Ok((certificate.pem(), key.serialize_pem()))
+    }
+
     /// Whether its constraints let it vouch for `name`.
     pub fn covers(&self, name: &str) -> bool {
         let name = normalize_host(name);
@@ -722,5 +765,39 @@ mod tests {
         let renewed = minter.leaf("shop.test").unwrap();
         assert!(!Arc::ptr_eq(&first, &renewed));
         verify(&ca, &renewed.cert[0], "shop.test").unwrap();
+    }
+
+    #[test]
+    fn a_project_gets_a_certificate_for_its_names_that_the_authority_vouches_for() {
+        let ca = DeviceCa::generate(&names(&["local"])).unwrap();
+        let (pem, key) = ca
+            .issue(
+                &names(&["shop.local", "www.shop.local", "localhost", "127.0.0.1"]),
+                3650,
+            )
+            .unwrap();
+        assert!(key.contains("PRIVATE KEY"));
+        let der = rustls_pemfile_der(&pem);
+        verify(&ca, &der, "shop.local").unwrap();
+        verify(&ca, &der, "www.shop.local").unwrap();
+        verify(&ca, &der, "localhost").unwrap();
+        let (_, parsed) = X509Certificate::from_der(der.as_ref()).unwrap();
+        let validity = parsed.validity();
+        assert!(
+            validity.not_after.timestamp() - validity.not_before.timestamp() <= 398 * 24 * 3600
+        );
+        assert!(!parsed.is_ca());
+        // Outside its constraints: refused, not issued.
+        assert!(ca.issue(&names(&["shop.com"]), 30).is_err());
+        assert!(ca.issue(&names(&["127.0.0.1"]), 30).is_err());
+    }
+
+    fn rustls_pemfile_der(pem: &str) -> CertificateDer<'static> {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let body: String = pem
+            .lines()
+            .filter(|line| !line.starts_with("-----"))
+            .collect();
+        CertificateDer::from(STANDARD.decode(body).unwrap())
     }
 }

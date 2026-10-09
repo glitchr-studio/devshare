@@ -273,3 +273,10 @@ html:not(.mac) body.no-sidebar .content .bar { padding-left: 52px; }
 #preview-note { white-space: pre-wrap; }
 .addresses .dot { margin-right: 2px; }
 .addresses .local.mono { font-size: 11px; }
+
+/* The share dock, at the foot of the sidebar */
+.share-dock { flex: none; display: flex; flex-direction: column; gap: 4px; padding: 10px 12px 14px; border-top: 1px solid var(--line); }
+.share-dock .primary { width: 100%; padding: 7px 12px; font-weight: 600; }
+.share-dock .primary.sharing { background: var(--present); border-color: var(--present); color: #fff; }
+.share-dock .muted { text-align: center; }
+#project-share-now { padding: 4px 14px; }

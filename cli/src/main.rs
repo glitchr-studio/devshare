@@ -118,6 +118,21 @@ enum CaAction {
     Renew,
     /// Stop trusting it and delete it.
     Remove,
+    /// Issue a certificate for a project of this machine to serve itself,
+    /// trusted wherever this authority is: `devshare ca issue shop.local
+    /// www.shop.local --cert ssl/shop.crt --key ssl/shop.key`.
+    Issue {
+        /// The names it covers: development names only.
+        #[arg(required = true)]
+        names: Vec<String>,
+        #[arg(long)]
+        cert: PathBuf,
+        #[arg(long)]
+        key: PathBuf,
+        /// How long it is valid, 397 days at most.
+        #[arg(long, default_value_t = 397)]
+        days: u32,
+    },
 }
 
 #[tokio::main]
@@ -591,6 +606,40 @@ fn ca(action: CaAction) -> Result<()> {
                 "Renewed: this computer trusts {} in place of the earlier one.",
                 clean(new.common_name(), 120)
             );
+        }
+        CaAction::Issue {
+            names,
+            cert,
+            key,
+            days,
+        } => {
+            let Some(ca) = DeviceCa::load(&domains)? else {
+                bail!("this device has no certificate authority yet: devshare ca install");
+            };
+            let (pem, private) = ca.issue(&names, days)?;
+            std::fs::write(&cert, pem).with_context(|| format!("writing {}", cert.display()))?;
+            {
+                use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&key)
+                    .with_context(|| format!("writing {}", key.display()))?;
+                file.write_all(private.as_bytes())?;
+            }
+            println!(
+                "Issued by {} for {}: {} and {}.",
+                clean(ca.common_name(), 120),
+                names.join(", "),
+                cert.display(),
+                key.display()
+            );
+            if !ca.trusted() {
+                println!("This computer does not trust the authority yet: devshare ca install.");
+            }
         }
         CaAction::Remove => {
             if devshare_core::ca::manage::remove(&domains)? {

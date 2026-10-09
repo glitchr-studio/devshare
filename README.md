@@ -254,7 +254,7 @@ Then open `ios/DevShare.xcodeproj` in Xcode, pick an iPhone and run.
 | `devshare join <invitation>` | Joins a session with its link, its QR code's text or its short code. |
 | `devshare discover [folder]` | Writes or refreshes the folder's `devshare.toml` from its compose file. |
 | `devshare settings` | Shows the general settings, common to all projects (`~/.config/devshare/devshare.toml`). |
-| `devshare ca` | This device's own certificate authority: `install`, `renew`, `remove`, see above. |
+| `devshare ca` | This device's own certificate authority: `install`, `renew`, `remove`, see above; `issue <names…> --cert <file> --key <file>` gives a project of this machine a certificate trusted wherever the authority is, in place of a self-signed one. |
 | `devshare-helper` | `install`, `uninstall`, `run`: the part that needs root on a guest's computer, see above. |
 | `devshare-server` | A control plane to run on its own. Not needed for local use: `share` starts one when none is running. |
 

@@ -205,6 +205,8 @@ function renderProject(project) {
 }
 
 function projectState(project) {
+  $('project-share-now').textContent = sharingNow ? 'Show invitation' : 'Share now';
+  $('project-share-now').disabled = Boolean(project.problem) && !sharingNow;
   const state = states.get(project.folder) ?? 'stopped';
   $('project-state').textContent = project.problem ? '' : STATE_WORDS[state].split(':')[0];
   $('project-state').className = state === 'running' ? 'state on' : state === 'partial' ? 'state partial' : 'state';
@@ -283,6 +285,32 @@ $('project-start').addEventListener('click', () => { const project = currentProj
 $('project-stop').addEventListener('click', () => { const project = currentProject(); if (project) runProject(project, 'down', $('project-stop')); });
 $('project-reveal').addEventListener('click', () => { if (selected) invoke('reveal', { path: selected }).catch(() => {}); });
 $('project-share-alone').addEventListener('click', () => { if (selected) share([selected], $('project-share-alone')); });
+// Share now: this project with the others switched on, switched on itself.
+$('project-share-now').addEventListener('click', async () => {
+  const project = currentProject();
+  if (!project) return;
+  if (sharingNow) {
+    show('share');
+    return;
+  }
+  if (!project.on) {
+    project.on = true;
+    $('project-switch').checked = true;
+    for (const other of document.querySelectorAll(`#projects input.switch[data-folder="${CSS.escape(project.folder)}"]`)) other.checked = true;
+    await invoke('switch', { path: project.folder, on: true }).catch(() => {});
+  }
+  share(chosen(), $('project-share-now'));
+});
+$('dock-share').addEventListener('click', () => {
+  if (sharingNow) {
+    show('share');
+    return;
+  }
+  const folders = chosen();
+  if (folders.length) share(folders, $('dock-share'));
+});
+$('minutes').addEventListener('change', chosen);
+$('limit').addEventListener('change', chosen);
 $('project-remove').addEventListener('click', async () => {
   if (!selected) return;
   await invoke('remove_project', { path: selected });
@@ -397,6 +425,19 @@ function chosen() {
   const on = listed.filter((project) => project.on && !project.problem);
   $('share').disabled = on.length === 0 || joining;
   $('share').textContent = on.length > 1 ? `Share ${on.length} projects` : 'Share';
+  // The dock: Share what is switched on, or show the invitation.
+  const dock = $('dock-share');
+  if (sharingNow) {
+    dock.textContent = 'Sharing · Show invitation';
+    dock.className = 'primary sharing';
+    dock.disabled = false;
+    $('dock-note').textContent = 'QR code and link on the invitation page';
+  } else {
+    dock.textContent = on.length > 1 ? `Share ${on.length} projects` : on.length ? `Share ${on[0].name}` : 'Share';
+    dock.className = 'primary';
+    dock.disabled = on.length === 0 || joining;
+    $('dock-note').textContent = on.length ? `${$('minutes').selectedOptions[0]?.textContent ?? ''}, up to ${$('limit').value} guests` : 'Switch on a project to share it';
+  }
   $('share-summary').textContent = on.length
     ? `Switched on: ${on.map((project) => project.name).join(', ')}.`
     : 'Switch on the projects to share, in the list at the left.';
@@ -415,6 +456,9 @@ async function share(paths, button) {
       minutes: Number($('minutes').value),
       guests: Number($('limit').value),
     });
+    // Straight to the invitation: its QR code and its link.
+    sharingNow = true;
+    show('share');
   } catch (error) {
     $('error').textContent = String(error);
     show('share');

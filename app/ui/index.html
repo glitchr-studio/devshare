@@ -40,6 +40,12 @@
       <p id="none" class="muted small" hidden>No project yet. Add one with +.</p>
       <p class="nav-foot"><button id="show-hidden" type="button" class="link" hidden></button></p>
     </nav>
+    <!-- Always at hand: what is switched on is shared from here, and the
+         invitation (QR code, link) is one click away while sharing. -->
+    <div class="share-dock">
+      <button id="dock-share" type="button" class="primary">Share</button>
+      <span id="dock-note" class="muted small"></span>
+    </div>
   </aside>
 
   <div class="content">
@@ -90,7 +96,8 @@
         <span id="project-state" class="state"></span>
         <button id="project-start" type="button" hidden>Start</button>
         <button id="project-stop" type="button" hidden>Stop</button>
-        <label class="shared-switch" title="Shared when you press Share"><input id="project-switch" type="checkbox" class="switch"> Shared</label>
+        <label class="shared-switch" title="Included when you share"><input id="project-switch" type="checkbox" class="switch"> Include</label>
+        <button id="project-share-now" type="button" class="primary">Share now</button>
       </header>
       <div class="page">
         <p id="project-problem" class="error" hidden></p>
@@ -120,7 +127,7 @@
           <p class="folder-line"><code id="project-folder"></code></p>
           <p class="actions">
             <button id="project-reveal" type="button" class="small">Reveal in Finder</button>
-            <button id="project-share-alone" type="button" class="small">Share only this</button>
+            <button id="project-share-alone" type="button" class="small">Share only this one</button>
             <button id="project-remove" type="button" class="small">Take off the list</button>
           </p>
         </section>
