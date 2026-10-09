@@ -15,8 +15,26 @@ RUST = docker run --rm \
 	-w /work rust:1-bookworm
 CARGO = $(RUST) cargo
 
-.PHONY: build release test tests check e2e deploy deb dist-macos relay macos ios ios-app app dmg showcase demo install uninstall clean
+# `make` alone: everything this Mac uses, built natively. The commands into
+# bin/ (devshare, devshare-server, devshare-helper) and the app into
+# dist/DevShare.app. `make open` then opens the app.
+.DEFAULT_GOAL := all
 
+.PHONY: all open build release test tests check e2e deploy deb dist-macos relay macos ios ios-app app dmg showcase demo install uninstall clean
+
+all: install dmg
+	@echo
+	@echo "Built: the commands in bin/ (source env.sh to use them), the app in dist/DevShare.app."
+	@echo "make open quits the running app, if any, and opens this one."
+
+# The app as just built, in place of one already running.
+open:
+	-osascript -e 'tell application id "studio.glitchr.devshare" to quit' >/dev/null 2>&1
+	@sleep 1
+	open dist/DevShare.app
+
+
+# The Linux binaries, in Docker: what the end-to-end harness runs.
 build:
 	$(CARGO) build
 
@@ -67,8 +85,10 @@ relay:
 	$(RUST) sh -c 'test -x target/relay/bin/iroh-relay || cargo install iroh-relay@1.3.0 --features server --root target/relay'
 
 # The native binaries, in target-macos/debug. Needs rustup (brew install rustup).
+# Without incremental compilation: its cache once grew to 18 GB and filled
+# the disk.
 macos:
-	PATH="$$(brew --prefix rustup)/bin:$$PATH" cargo build --workspace --target-dir target-macos
+	CARGO_INCREMENTAL=0 PATH="$$(brew --prefix rustup)/bin:$$PATH" cargo build --workspace --target-dir target-macos
 
 # bin/: the commands, as links to the native build, so that a rebuild
 # (make macos) is picked up at once. `source env.sh` puts bin/ on the PATH.

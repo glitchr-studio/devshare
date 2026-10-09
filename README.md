@@ -81,7 +81,8 @@ sends: the page reads it on the device, and no server is involved.
 Docker and a Rust toolchain are needed (`brew install rustup` on macOS).
 
 ```sh
-make install          # builds the commands into bin/
+make                  # builds the commands into bin/ and the app into dist/DevShare.app
+make open             # opens the app (quitting one already running)
 source env.sh         # puts bin/ on the PATH of this shell
 make demo             # starts the example project and shares it
 ```
