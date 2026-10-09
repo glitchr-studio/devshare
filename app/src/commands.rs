@@ -506,25 +506,58 @@ async fn check(host: String, port: u16, target: String, named: bool) -> AddressC
     let Ok(client) = client else {
         return answer("error", "cannot be asked".into());
     };
-    match client
-        .get(format!("{scheme}://{host}:{target_port}/"))
-        .send()
-        .await
-    {
-        Ok(response) => {
-            let status = response.status();
-            let detail = format!(
+    // Redirects followed as a browser would, a few of them: what counts is
+    // where they lead.
+    let mut location = format!("{scheme}://{host}:{target_port}/");
+    let mut said: Vec<String> = Vec::new();
+    for _ in 0..5 {
+        let response = match client.get(&location).send().await {
+            Ok(response) => response,
+            Err(error) => {
+                let why = if error.is_timeout() {
+                    "answers, but not in time"
+                } else if said.is_empty() {
+                    "answers, but not with a web page"
+                } else {
+                    "leads nowhere"
+                };
+                said.push(match said.is_empty() {
+                    true => why.to_string(),
+                    false => format!("{location}: {why}"),
+                });
+                return answer("error", said.join(" → "));
+            }
+        };
+        let status = response.status();
+        said.push(
+            format!(
                 "{} {}",
                 status.as_u16(),
                 status.canonical_reason().unwrap_or("")
             )
             .trim()
-            .to_string();
-            answer(if status.as_u16() < 400 { "ok" } else { "error" }, detail)
+            .to_string(),
+        );
+        let next = status
+            .is_redirection()
+            .then(|| response.headers().get(reqwest::header::LOCATION).cloned())
+            .flatten()
+            .and_then(|next| next.to_str().ok().map(str::to_string))
+            .and_then(|next| url::Url::parse(&location).ok()?.join(&next).ok());
+        let Some(next) = next else {
+            let fine = status.as_u16() < 400;
+            return answer(if fine { "ok" } else { "error" }, said.join(" → "));
+        };
+        // Elsewhere than this machine (a login page, say): not followed.
+        let local = matches!(next.host_str(), Some(name) if name == host || name == "localhost" || name == "127.0.0.1");
+        if !local {
+            said.push(format!("to {next}"));
+            return answer("ok", said.join(" → "));
         }
-        Err(error) if error.is_timeout() => answer("error", "answers, but not in time".into()),
-        Err(_) => answer("error", "answers, but not with a web page".into()),
+        location = next.to_string();
     }
+    said.push("too many redirects".into());
+    answer("error", said.join(" → "))
 }
 
 /// The names this machine's /etc/hosts gives to its loopback.

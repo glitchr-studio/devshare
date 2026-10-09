@@ -378,6 +378,73 @@ fn the_window_finds_projects_edits_the_settings_and_starts_nothing_it_cannot() {
             serve("500 Internal Server Error").await,
         )
     });
+    // A redirect that lands on a page, and one like a project that sends
+    // to HTTPS on a port speaking plain HTTP.
+    let (lands, nowhere) = tauri::async_runtime::block_on(async {
+        let redirecting = |to_https: bool| async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                while let Ok((mut stream, _)) = listener.accept().await {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut request = [0u8; 1024];
+                    let read = stream.read(&mut request).await.unwrap_or(0);
+                    let asked = String::from_utf8_lossy(&request[..read]).to_string();
+                    let answer = if asked.starts_with("GET /home ") {
+                        "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_string()
+                    } else if to_https {
+                        format!("HTTP/1.1 308 Permanent Redirect\r\nLocation: https://127.0.0.1:{}/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", address.port())
+                    } else {
+                        "HTTP/1.1 302 Found\r\nLocation: /home\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
+                    };
+                    stream.write_all(answer.as_bytes()).await.ok();
+                }
+            });
+            address
+        };
+        (redirecting(false).await, redirecting(true).await)
+    });
+    let redirects = home.join("redirects.toml");
+    std::fs::write(
+        &redirects,
+        format!(
+            "[environments.redirects]\nservices = [\n  {{ host = \"redirects.test\", port = {}, target = \"{lands}\" }},\n  {{ host = \"redirects.test\", port = {}, target = \"{nowhere}\" }},\n]\n",
+            lands.port(), nowhere.port()
+        ),
+    )
+    .unwrap();
+    let followed = ask(
+        &window,
+        "check_project",
+        json!({ "path": redirects.display().to_string() }),
+    )
+    .unwrap();
+    let outcome = |port: u16| {
+        followed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["port"] == port)
+            .map(|check| {
+                (
+                    check["state"].as_str().unwrap().to_string(),
+                    check["detail"].as_str().unwrap().to_string(),
+                )
+            })
+            .unwrap()
+    };
+    assert_eq!(
+        outcome(lands.port()),
+        ("ok".into(), "302 Found → 200 OK".into())
+    );
+    let (state, detail) = outcome(nowhere.port());
+    assert_eq!(state, "error", "{detail}");
+    assert!(
+        detail.starts_with("308 Permanent Redirect → https://127.0.0.1:")
+            && detail.ends_with("leads nowhere"),
+        "{detail}"
+    );
     let gone = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
