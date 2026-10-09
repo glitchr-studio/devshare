@@ -63,7 +63,7 @@ type Active = Arc<Mutex<HashSet<u32>>>;
 pub fn run(options: Options) -> Result<()> {
     crate::must_be_root("serving guests")?;
     // Whatever a previous helper or a killed guest left behind.
-    if let Err(error) = system_dns::remove_leftovers() {
+    if let Err(error) = system_dns::remove_leftovers().and_then(|()| system_dns::set_local(&[])) {
         tracing::warn!("could not clean up what was left behind: {error}");
     }
 
@@ -113,6 +113,8 @@ fn serve(mut stream: UnixStream, options: &Options, active: &Active) {
     }
 
     let mut session: Option<Session> = None;
+    // Whether this connection pointed this machine's own names at itself.
+    let mut local = false;
     // Until the guest is gone, however it went.
     while let Ok(request) = helper::read::<Request>(&mut stream, MAX_MESSAGE) {
         let outcome = match request {
@@ -159,6 +161,19 @@ fn serve(mut stream: UnixStream, options: &Options, active: &Active) {
                 };
                 send(&mut stream, &Reply::Outcome(outcome), None)
             }
+            Request::Local { names } => {
+                let outcome = match set_local(&names, &options.trusted_domains) {
+                    Ok(()) => {
+                        local = !names.is_empty();
+                        Outcome::Local {}
+                    }
+                    Err(error) => {
+                        tracing::warn!("refused names for uid {uid}: {error:#}");
+                        Outcome::Error(format!("{error:#}"))
+                    }
+                };
+                send(&mut stream, &Reply::Outcome(outcome), None)
+            }
             Request::UntrustCa { sha256 } => {
                 let outcome = match trust::untrust(&options.store, uid, &sha256) {
                     Ok(()) => Outcome::Untrusted {},
@@ -172,6 +187,35 @@ fn serve(mut stream: UnixStream, options: &Options, active: &Active) {
         }
     }
     take_down(uid, &mut session, active);
+    if local {
+        if let Err(error) = system_dns::set_local(&[]) {
+            tracing::error!("could not remove this machine's names: {error}");
+        }
+    }
+}
+
+/// Points this machine's own project names at itself, after the same check
+/// as a session's names: development names only, and not too many.
+fn set_local(names: &[String], trusted_domains: &Path) -> Result<()> {
+    if names.len() > MAX_NAMES {
+        bail!("at most {MAX_NAMES} names, not {}", names.len());
+    }
+    let policy = NamePolicy {
+        domains: trusted(trusted_domains),
+        trust_all: false,
+    };
+    if let Some(name) = names
+        .iter()
+        .find(|name| !policy.accepts(name) || name.as_str() == "localhost")
+    {
+        bail!(
+            "\"{}\" is not a name of this machine's projects: not a hostname, or not under a test domain",
+            devshare_protocol::clean(name, 80)
+        );
+    }
+    system_dns::set_local(names).context("pointing the names at this machine")?;
+    tracing::info!("this machine's names: {}", names.join(", "));
+    Ok(())
 }
 
 /// Creates the interface and installs the names, after checking everything

@@ -163,6 +163,24 @@ impl Helper {
         }
     }
 
+    /// Points the names of this machine's own projects at itself while this
+    /// connection stays open; none removes them.
+    pub fn local(&mut self, names: &[String]) -> Result<()> {
+        let request = Request::Local {
+            names: names.to_vec(),
+        };
+        match self.ask(&request) {
+            Ok((Reply::Outcome(Outcome::Local {}), _)) => Ok(()),
+            Ok((Reply::Outcome(Outcome::Error(error)), _)) => Err(refusal(&error)),
+            Ok(_) => bail!("DevShare's helper gave an unexpected answer"),
+            // An older helper closes on a request it does not know.
+            Err(_) => Err(anyhow!(
+                "DevShare's helper is older than this app: install this version's \
+                 (Settings, This computer, Install)"
+            )),
+        }
+    }
+
     /// One request, one reply, and the descriptor that came with it if any.
     fn ask(&mut self, request: &Request) -> Result<(Reply, Option<OwnedFd>)> {
         self.stream.write_all(&helper::encode(request))?;

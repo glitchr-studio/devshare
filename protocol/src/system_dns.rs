@@ -7,6 +7,10 @@ use std::{io, net::Ipv4Addr};
 
 const BEGIN: &str = "# >>> devshare session, removed when it ends";
 const END: &str = "# <<< devshare";
+/// The names of this machine's own projects, pointed at itself while the
+/// desktop app runs: a block of its own, which a session never touches.
+const LOCAL_BEGIN: &str = "# >>> devshare projects of this machine, removed when the app quits";
+const LOCAL_END: &str = "# <<< devshare projects";
 
 /// What [`install`] put in place, to give back to [`remove`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,8 +39,8 @@ pub fn install(
             interface: interface.to_string(),
         });
     }
-    linux::rewrite_hosts(|hosts| with_block(hosts, names)).inspect_err(|_| {
-        linux::rewrite_hosts(without_block).ok();
+    rewrite_hosts(|hosts| with_block(hosts, names)).inspect_err(|_| {
+        rewrite_hosts(without_block).ok();
     })?;
     Ok(Installed::Hosts)
 }
@@ -62,7 +66,7 @@ pub fn remove(installed: &Installed) -> io::Result<()> {
             Ok(())
         }
         #[cfg(target_os = "linux")]
-        Installed::Hosts => linux::rewrite_hosts(without_block),
+        Installed::Hosts => rewrite_hosts(without_block),
         #[cfg(target_os = "macos")]
         Installed::ResolverFiles => {
             macos::remove();
@@ -74,9 +78,72 @@ pub fn remove(installed: &Installed) -> io::Result<()> {
 /// Removes whatever a session that was killed left behind.
 pub fn remove_leftovers() -> io::Result<()> {
     #[cfg(target_os = "linux")]
-    linux::rewrite_hosts(without_block)?;
+    rewrite_hosts(without_block)?;
     #[cfg(target_os = "macos")]
     macos::remove();
+    Ok(())
+}
+
+/// Points the names of this machine's own projects at itself, replacing the
+/// ones pointed before; none removes them. In the hosts file on every
+/// system, IPv4 and IPv6 alike (a `.local` name asked for IPv6 alone would
+/// otherwise wait for Bonjour).
+pub fn set_local(names: &[String]) -> io::Result<()> {
+    rewrite_hosts(|hosts| with_local(hosts, names))?;
+    flush_cache();
+    Ok(())
+}
+
+/// The hosts file with this machine's own block of `names`, or without it.
+fn with_local(hosts: &str, names: &[String]) -> String {
+    let mut content = between(hosts, LOCAL_BEGIN, LOCAL_END);
+    if names.is_empty() {
+        return content;
+    }
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(LOCAL_BEGIN);
+    content.push('\n');
+    for name in names {
+        content.push_str(&format!("127.0.0.1\t{name}\n::1\t{name}\n"));
+    }
+    content.push_str(LOCAL_END);
+    content.push('\n');
+    content
+}
+
+/// The system's resolver forgets what it knew of names just changed.
+fn flush_cache() {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("dscacheutil")
+            .arg("-flushcache")
+            .status()
+            .ok();
+        std::process::Command::new("killall")
+            .args(["-HUP", "mDNSResponder"])
+            .status()
+            .ok();
+    }
+}
+
+fn hosts_file() -> String {
+    std::env::var("DEVSHARE_HOSTS_FILE").unwrap_or_else(|_| "/etc/hosts".to_string())
+}
+
+/// Written in place: the hosts file is often a mount that cannot be
+/// replaced by a rename.
+fn rewrite_hosts(change: impl FnOnce(&str) -> String) -> io::Result<()> {
+    let path = hosts_file();
+    let context = |doing: &str, error: io::Error| {
+        io::Error::new(error.kind(), format!("{doing} {path}: {error}"))
+    };
+    let current = std::fs::read_to_string(&path).map_err(|error| context("reading", error))?;
+    let changed = change(&current);
+    if changed != current {
+        std::fs::write(&path, changed).map_err(|error| context("writing", error))?;
+    }
     Ok(())
 }
 
@@ -100,14 +167,21 @@ fn with_block(hosts: &str, names: &[(String, Ipv4Addr)]) -> String {
 /// The hosts file as it was before any session touched it.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn without_block(hosts: &str) -> String {
+    between(hosts, BEGIN, END)
+}
+
+/// `hosts` without the lines from `begin` to `end`.
+fn between(hosts: &str, begin: &str, end: &str) -> String {
     let mut content = String::with_capacity(hosts.len());
     let mut inside = false;
     for line in hosts.split_inclusive('\n') {
-        match line.trim_end() {
-            BEGIN => inside = true,
-            END => inside = false,
-            _ if !inside => content.push_str(line),
-            _ => {}
+        let trimmed = line.trim_end();
+        if trimmed == begin {
+            inside = true;
+        } else if trimmed == end {
+            inside = false;
+        } else if !inside {
+            content.push_str(line);
         }
     }
     content
@@ -115,11 +189,7 @@ fn without_block(hosts: &str) -> String {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use std::{fs, io, net::Ipv4Addr, path::Path, process::Command};
-
-    fn hosts_file() -> String {
-        std::env::var("DEVSHARE_HOSTS_FILE").unwrap_or_else(|_| "/etc/hosts".to_string())
-    }
+    use std::{net::Ipv4Addr, path::Path, process::Command};
 
     fn resolvectl(args: &[String]) -> bool {
         Command::new("resolvectl")
@@ -143,20 +213,6 @@ mod linux {
         resolvectl(&["revert".into(), interface.into()]);
     }
 
-    /// Written in place: the hosts file is often a mount that cannot be
-    /// replaced by a rename.
-    pub fn rewrite_hosts(change: impl FnOnce(&str) -> String) -> io::Result<()> {
-        let path = hosts_file();
-        let context = |doing: &str, error: io::Error| {
-            io::Error::new(error.kind(), format!("{doing} {path}: {error}"))
-        };
-        let current = fs::read_to_string(&path).map_err(|error| context("reading", error))?;
-        let changed = change(&current);
-        if changed != current {
-            fs::write(&path, changed).map_err(|error| context("writing", error))?;
-        }
-        Ok(())
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -241,5 +297,39 @@ mod tests {
                 original.trim_end_matches('\n')
             );
         }
+    }
+
+    #[test]
+    fn this_machine_s_own_names_and_a_session_s_live_side_by_side() {
+        let hosts = "127.0.0.1 localhost\n";
+        let session = with_block(
+            hosts,
+            &[("shop.test".into(), Ipv4Addr::new(198, 18, 90, 10))],
+        );
+        let both = with_local(
+            &session,
+            &["chapaland.local".into(), "www.chapaland.local".into()],
+        );
+        assert!(
+            both.contains("127.0.0.1\tchapaland.local\n::1\tchapaland.local\n"),
+            "{both}"
+        );
+        assert!(
+            both.contains("198.18.90.10\tshop.test"),
+            "the session's block stays: {both}"
+        );
+        // Replaced, not added to.
+        let again = with_local(&both, &["avocat.local".into()]);
+        assert!(
+            !again.contains("chapaland") && again.contains("avocat.local"),
+            "{again}"
+        );
+        // A session's end leaves this machine's names; none removes them.
+        let ended = without_block(&again);
+        assert!(
+            ended.contains("avocat.local") && !ended.contains("shop.test"),
+            "{ended}"
+        );
+        assert_eq!(with_local(&ended, &[]), hosts);
     }
 }

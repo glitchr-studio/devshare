@@ -14,6 +14,7 @@
 //! {"down":{}}                                     {"down":{}}
 //! {"trust_ca":{"certificate":"-----BEGIN…"}}      {"trusted":{"sha256":"…"}}
 //! {"untrust_ca":{"sha256":"…"}}                   {"untrusted":{}}
+//! {"local":{"names":["shop.local"]}}              {"local":{}}
 //! ```
 //!
 //! Anything refused is answered `{"error":"…"}`.
@@ -82,6 +83,11 @@ pub enum Request {
     UntrustCa {
         sha256: String,
     },
+    /// Points the names of this machine's own projects at itself, for as
+    /// long as the connection stays open; none removes them.
+    Local {
+        names: Vec<String>,
+    },
 }
 
 /// The interface a session needs, and the names to resolve through it.
@@ -125,6 +131,7 @@ pub enum Outcome {
         sha256: String,
     },
     Untrusted {},
+    Local {},
     Error(String),
 }
 

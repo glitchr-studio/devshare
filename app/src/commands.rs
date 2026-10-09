@@ -32,6 +32,62 @@ pub(crate) struct Sharing(Mutex<Option<Session>>);
 #[derive(Default)]
 struct Joining(Mutex<Option<Joined>>);
 
+/// The connection to the helper that keeps the names of the projects
+/// switched on pointed at this Mac, the names last sent, and why the last
+/// attempt failed if it did. Closed with the app: the helper then removes
+/// the names.
+#[derive(Default)]
+pub(crate) struct LocalNames {
+    helper: Mutex<Option<devshare_core::guest::Helper>>,
+    sent: Mutex<Vec<String>>,
+    trouble: Mutex<Option<String>>,
+}
+
+/// Points the names of the projects switched on at this Mac, through the
+/// helper, so that this Mac opens them by name too. In the background.
+pub fn sync_names<R: Runtime>(app: &AppHandle<R>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Ok(projects) = projects(&app) else {
+            return;
+        };
+        let settings = Settings::load().unwrap_or_default();
+        let policy = devshare_core::protocol::names::NamePolicy::with(Some(settings.domain()));
+        let mut names: Vec<String> = projects
+            .list(&settings, &discovery_options())
+            .projects
+            .iter()
+            .filter(|project| project.on)
+            .flat_map(|project| project.names.clone())
+            .filter(|name| name != "localhost" && policy.accepts(name))
+            .collect();
+        names.sort();
+        names.dedup();
+        let state = app.state::<LocalNames>();
+        let mut helper = state.helper.lock().unwrap();
+        if *state.sent.lock().unwrap() == names && helper.is_some() {
+            return;
+        }
+        if helper.is_none() {
+            *helper = devshare_core::guest::Helper::connect().ok().flatten();
+        }
+        let Some(connection) = helper.as_mut() else {
+            *state.trouble.lock().unwrap() = None;
+            return;
+        };
+        match connection.local(&names) {
+            Ok(()) => {
+                *state.sent.lock().unwrap() = names;
+                *state.trouble.lock().unwrap() = None;
+            }
+            Err(error) => {
+                *helper = None;
+                *state.trouble.lock().unwrap() = Some(format!("{error:#}"));
+            }
+        }
+    });
+}
+
 /// An invitation handed over by a link before the window asked for it.
 #[derive(Default)]
 struct Handed(Mutex<Option<String>>);
@@ -138,6 +194,7 @@ fn switch<R: Runtime>(
         .switch(&PathBuf::from(path), on)
         .map_err(|error| format!("{error:#}"))?;
     crate::native::changed(&app, window.label());
+    sync_names(&app);
     Ok(())
 }
 
@@ -164,6 +221,7 @@ fn add_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<String, St
         return Ok(format!("projects in {}", path.display()));
     }
     let added = projects.add(&path).map_err(|error| format!("{error:#}"))?;
+    sync_names(&app);
     Ok(added
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -262,6 +320,7 @@ fn remove_project<R: Runtime>(
         .remove(&PathBuf::from(path))
         .map_err(|error| format!("{error:#}"))?;
     crate::native::changed(&app, window.label());
+    sync_names(&app);
     Ok(())
 }
 
@@ -312,6 +371,7 @@ fn restore_project<R: Runtime>(
         .restore(&PathBuf::from(path))
         .map_err(|error| format!("{error:#}"))?;
     crate::native::changed(&app, window.label());
+    sync_names(&app);
     Ok(())
 }
 
@@ -410,7 +470,8 @@ struct AddressCheck {
     /// What to open in a browser here: the name when this machine's
     /// /etc/hosts gives it to the loopback, else the address dialled.
     url: String,
-    /// `ok` (a page), `error` (an HTTP error, or not a page), `down`.
+    /// `ok` (a page), `open` (it answers, not as a web server), `error`
+    /// (an HTTP error, a redirect to nowhere, a certificate refused), `down`.
     state: &'static str,
     /// `200 OK`, `426 Upgrade Required`, `nothing answers`…
     detail: String,
@@ -529,35 +590,27 @@ async fn check(host: String, port: u16, target: String, named: bool) -> AddressC
     // Redirects followed as a browser would, a few of them: what counts is
     // where they lead.
     let mut location = format!("{scheme}://{host}:{target_port}/");
-    let mut said: Vec<String> = Vec::new();
+    // Where redirects led, said once: "redirects to https://shop.test/".
+    let mut redirected: Option<String> = None;
+    let said = |redirected: &Option<String>, what: String| match redirected {
+        Some(to) => format!("redirects to {to} → {what}"),
+        None => what,
+    };
     for _ in 0..5 {
         let response = match client.get(&location).send().await {
             Ok(response) => response,
-            Err(error) => {
-                let why = if error.is_timeout() {
-                    "answers, but not in time"
-                } else if said.is_empty() {
-                    "answers, but not with a web page"
-                } else {
-                    "leads nowhere"
-                };
-                said.push(match said.is_empty() {
-                    true => why.to_string(),
-                    false => format!("{location}: {why}"),
-                });
-                return answer("error", said.join(" → "));
+            Err(_) if redirected.is_none() => {
+                // Open, but it does not speak HTTP: PHP's FastCGI port behind
+                // nginx, a database, a WebSocket-only server.
+                return answer("open", "open, not a web page".into());
+            }
+            Err(_) => {
+                let to = redirected.clone().unwrap_or_default();
+                return answer("error", format!("redirects to {to}, where nothing answers"));
             }
         };
         let status = response.status();
-        said.push(
-            format!(
-                "{} {}",
-                status.as_u16(),
-                status.canonical_reason().unwrap_or("")
-            )
-            .trim()
-            .to_string(),
-        );
+        let code = status.as_u16();
         let next = status
             .is_redirection()
             .then(|| response.headers().get(reqwest::header::LOCATION).cloned())
@@ -565,19 +618,28 @@ async fn check(host: String, port: u16, target: String, named: bool) -> AddressC
             .and_then(|next| next.to_str().ok().map(str::to_string))
             .and_then(|next| url::Url::parse(&location).ok()?.join(&next).ok());
         let Some(next) = next else {
-            let fine = status.as_u16() < 400;
-            return answer(if fine { "ok" } else { "error" }, said.join(" → "));
+            let reason = status.canonical_reason().unwrap_or("");
+            let what = match code {
+                502..=504 => {
+                    format!("{code} {reason}: the proxy answers, the app behind it does not")
+                }
+                426 => format!("{code} {reason}: a WebSocket port, not a page"),
+                _ => format!("{code} {reason}").trim().to_string(),
+            };
+            return answer(
+                if code < 400 { "ok" } else { "error" },
+                said(&redirected, what),
+            );
         };
         // Elsewhere than this machine (a login page, say): not followed.
         let local = matches!(next.host_str(), Some(name) if name == host || name == "localhost" || name == "127.0.0.1");
         if !local {
-            said.push(format!("to {next}"));
-            return answer("ok", said.join(" → "));
+            return answer("ok", format!("redirects to {next}, elsewhere"));
         }
+        redirected = Some(next.to_string());
         location = next.to_string();
     }
-    said.push("too many redirects".into());
-    answer("error", said.join(" → "))
+    answer("error", said(&redirected, "too many redirects".into()))
 }
 
 /// What certifying a project did.
@@ -829,6 +891,9 @@ fn save_settings(values: SettingsView) -> Result<(), String> {
 struct Computer {
     /// `ready`, `absent`, or why the helper does not serve this user.
     helper: String,
+    /// Why the names of the projects switched on could not be pointed at
+    /// this Mac, if they could not.
+    names: Option<String>,
     authority: Option<Authority>,
 }
 
@@ -848,8 +913,9 @@ fn domains() -> Vec<String> {
 }
 
 #[tauri::command]
-async fn computer() -> Result<Computer, String> {
-    tauri::async_runtime::spawn_blocking(|| {
+async fn computer<R: Runtime>(app: AppHandle<R>) -> Result<Computer, String> {
+    let names = app.state::<LocalNames>().trouble.lock().unwrap().clone();
+    tauri::async_runtime::spawn_blocking(move || {
         let helper = match devshare_core::guest::Helper::connect() {
             Ok(Some(_)) => "ready".to_string(),
             Ok(None) => "absent".to_string(),
@@ -872,7 +938,11 @@ async fn computer() -> Result<Computer, String> {
                     days_left: (ca.not_after() - now) / 86_400,
                 }
             });
-        Computer { helper, authority }
+        Computer {
+            helper,
+            names,
+            authority,
+        }
     })
     .await
     .map_err(|error| error.to_string())
@@ -880,8 +950,12 @@ async fn computer() -> Result<Computer, String> {
 
 /// Installs the helper: the system asks for an administrator's password.
 #[tauri::command]
-async fn install_helper() -> Result<(), String> {
-    crate::system::install_helper().await
+async fn install_helper<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    crate::system::install_helper().await?;
+    // A new helper: the names go to it.
+    *app.state::<LocalNames>().helper.lock().unwrap() = None;
+    sync_names(&app);
+    Ok(())
 }
 
 /// `install`, `renew` or `remove` this device's certificate authority. On
@@ -1069,6 +1143,7 @@ pub fn create<R: Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
         .manage(Sharing::default())
         .manage(Joining::default())
         .manage(Handed::default())
+        .manage(LocalNames::default())
         .invoke_handler(tauri::generate_handler![
             overview,
             switch,

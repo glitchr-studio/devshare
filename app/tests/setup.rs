@@ -436,13 +436,19 @@ fn the_window_finds_projects_edits_the_settings_and_starts_nothing_it_cannot() {
     };
     assert_eq!(
         outcome(lands.port()),
-        ("ok".into(), "302 Found → 200 OK".into())
+        (
+            "ok".into(),
+            format!(
+                "redirects to http://redirects.test:{}/home → 200 OK",
+                lands.port()
+            )
+        )
     );
     let (state, detail) = outcome(nowhere.port());
     assert_eq!(state, "error", "{detail}");
     assert!(
-        detail.starts_with("308 Permanent Redirect → https://127.0.0.1:")
-            && detail.ends_with("leads nowhere"),
+        detail.starts_with("redirects to https://127.0.0.1:")
+            && detail.ends_with(", where nothing answers"),
         "{detail}"
     );
     let gone = std::net::TcpListener::bind("127.0.0.1:0")

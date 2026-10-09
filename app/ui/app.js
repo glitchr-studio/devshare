@@ -226,14 +226,26 @@ async function checkProject(project) {
     checks = [];
   }
   if (mine !== checking || selected !== project.folder) return;
-  $('project-addresses').replaceChildren(...checks.map((check) => {
-    const open = element('button', { type: 'button', className: 'small', textContent: 'Open', disabled: check.state === 'down' });
-    open.addEventListener('click', () => invoke('open_local', { url: check.url }).catch((error) => { $('project-problem').hidden = false; $('project-problem').textContent = String(error); }));
+  // One row per port: the names that share it said together, when they
+  // got the same answer.
+  const rows = [];
+  for (const check of checks) {
+    const same = rows.find((row) => row.port === check.port && row.detail === check.detail && row.state === check.state);
+    if (same) same.hosts.push(check.host);
+    else rows.push({ ...check, hosts: [check.host] });
+  }
+  $('project-addresses').replaceChildren(...rows.map((row) => {
+    const usable = row.state === 'ok' || row.state === 'error';
+    const open = element('button', { type: 'button', className: 'small', textContent: 'Open', disabled: !usable });
+    open.addEventListener('click', () => invoke('open_local', { url: row.url }).catch((error) => { $('project-problem').hidden = false; $('project-problem').textContent = String(error); }));
+    const dot = { ok: 'on', open: 'open', error: 'warn' }[row.state] ?? '';
+    // The address, then what it answered, under it.
     return element('li', {}, [
-      element('span', { className: `dot ${check.state === 'ok' ? 'on' : check.state === 'error' ? 'warn' : ''}`, title: check.detail }),
-      element('span', { className: 'name mono', textContent: `${check.host}:${check.port}` }),
-      element('span', { className: `local ${check.state === 'error' ? 'attention' : 'muted'}`, textContent: check.detail }),
-      element('span', { className: 'local mono muted', textContent: check.url }),
+      element('span', { className: `dot ${dot}`, title: row.detail }),
+      element('span', { className: 'address' }, [
+        element('span', { className: 'name mono', textContent: `${row.hosts.join(', ')}:${row.port}`, title: row.hosts.join('\n') }),
+        element('span', { className: `said ${row.state === 'error' ? 'attention' : 'muted'}`, textContent: row.detail }),
+      ]),
       open,
     ]);
   }));
@@ -257,6 +269,13 @@ function certifyOffer(project, checks) {
     $('certify-text').textContent = 'Its certificate cannot be checked while the project is stopped. If it is self-signed, this Mac\'s DevShare authority can issue it one the browsers accept, for its development names only.';
   }
 }
+
+// Checked again on demand, and by itself while the page is open.
+$('check-again').addEventListener('click', () => { const project = currentProject(); if (project) checkProject(project); });
+setInterval(() => {
+  const project = currentProject();
+  if (project && page === 'project' && !document.hidden) checkProject(project);
+}, 15000);
 
 $('certify').addEventListener('click', async () => {
   const project = currentProject();
@@ -311,17 +330,17 @@ function preview(project, checks) {
   }
   $('preview').removeAttribute('src');
   $('preview-wrap').hidden = true;
-  const errors = checks.filter((check) => check.state === 'error');
-  $('preview-note').className = errors.length ? 'attention small' : 'muted small';
+  // What each address answered is said under it: here, only that there
+  // is nothing to show, and why in a word.
+  $('preview-note').className = 'muted small';
   if (checks.length === 0) {
     $('preview-note').textContent = 'Nothing to preview: the project shares no address.';
-  } else if (errors.length) {
-    $('preview-note').textContent = errors.map((check) => `${check.host}:${check.port} — ${check.detail}`).join('\n')
-      + (errors.length < checks.length ? '\nThe other ports do not answer.' : '');
-  } else {
+  } else if (checks.every((check) => check.state === 'down')) {
     $('preview-note').textContent = project.startable
-      ? 'Nothing answers on its ports: the project is not started. Start it to see it here.'
-      : 'Nothing answers on its ports: start the project the way you usually do.';
+      ? 'Nothing answers: the project is not started. Start it to see it here.'
+      : 'Nothing answers: start the project the way you usually do.';
+  } else {
+    $('preview-note').textContent = 'No address shows a page yet: see what each one answers below.';
   }
 }
 
@@ -570,7 +589,12 @@ async function refreshComputer() {
     : computer.helper === 'absent'
       ? 'Not installed: joining a session needs it, once, with an administrator password.'
       : computer.helper;
-  $('helper-install').hidden = ready;
+  if (ready && computer.names) {
+    $('helper-state').textContent = `Installed, but the projects' names could not be pointed at this Mac: ${computer.names}`;
+  } else if (ready) {
+    $('helper-state').textContent = 'Installed: joining a session needs no administrator rights, and the names of the projects switched on point at this Mac while DevShare runs.';
+  }
+  $('helper-install').hidden = ready && !computer.names;
 
   const authority = computer.authority;
   if (!authority) {

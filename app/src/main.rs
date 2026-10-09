@@ -31,6 +31,7 @@ fn main() {
             use tauri_plugin_deep_link::DeepLinkExt;
             devshare_app::native::menu(app)?;
             devshare_app::native::tray(app)?;
+            devshare_app::commands::sync_names(app.handle());
             // Registered at each start where the system allows it: an app
             // run from its build folder has no installer to do it.
             #[cfg(any(target_os = "linux", target_os = "windows"))]

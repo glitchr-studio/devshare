@@ -78,6 +78,7 @@ pub fn uninstall() -> Result<()> {
     }
     remove_service_files();
     devshare_protocol::system_dns::remove_leftovers().ok();
+    devshare_protocol::system_dns::set_local(&[]).ok();
     println!("DevShare's helper is removed.");
     Ok(())
 }
