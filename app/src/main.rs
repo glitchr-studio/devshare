@@ -45,11 +45,16 @@ fn main() {
         });
     // Closing the window hides it: the menu bar icon keeps the app at hand,
     // and Quit (⌘Q) ends it.
-    let builder = builder.on_window_event(|window, event| {
-        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+    let builder = builder.on_window_event(|window, event| match event {
+        tauri::WindowEvent::CloseRequested { api, .. } => {
             window.hide().ok();
             api.prevent_close();
         }
+        // The panel goes away with the first click elsewhere.
+        tauri::WindowEvent::Focused(false) if window.label() == devshare_app::native::PANEL => {
+            window.hide().ok();
+        }
+        _ => {}
     });
     commands::create(builder).run(commands::on_event);
 }

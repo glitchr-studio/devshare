@@ -39,6 +39,11 @@ pub struct Project {
     /// Every name and port it shares.
     pub names: Vec<String>,
     pub ports: Vec<u16>,
+    /// Each shared name and port, with where this machine reaches it itself.
+    pub addresses: Vec<Address>,
+    /// Where this machine reaches the project's entry point itself, for a
+    /// preview: `https://localhost:8633`.
+    pub preview: Option<String>,
     pub on: bool,
     /// Added by hand, rather than found.
     pub added: bool,
@@ -53,6 +58,14 @@ pub struct Project {
     pub usual_down: Option<String>,
     /// Why it cannot be shared as it is.
     pub problem: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Address {
+    pub host: String,
+    pub port: u16,
+    /// `http://localhost:8124`: the same port on this machine.
+    pub local: String,
 }
 
 /// The projects as the window shows them, and the ones it does not.
@@ -332,6 +345,8 @@ fn describe(path: &Path, options: &discover::Options, added: bool, on: bool) -> 
         hostname: None,
         names: Vec::new(),
         ports: Vec::new(),
+        addresses: Vec::new(),
+        preview: None,
         on,
         added,
         startable: false,
@@ -344,6 +359,28 @@ fn describe(path: &Path, options: &discover::Options, added: bool, on: bool) -> 
     match read {
         Ok((name, config)) => {
             project.name = name;
+            // The entry point says which port speaks HTTPS; this machine
+            // reaches it as localhost, which its certificate usually covers.
+            let entry = config
+                .environments
+                .values()
+                .find_map(|environment| environment.entrypoint.as_deref())
+                .and_then(|entrypoint| url::Url::parse(entrypoint).ok())
+                .filter(|entry| matches!(entry.scheme(), "http" | "https"));
+            let entry_port = entry
+                .as_ref()
+                .and_then(|entry| entry.port_or_known_default());
+            let scheme_of = |port: u16| match &entry {
+                Some(entry) if Some(port) == entry_port => entry.scheme().to_string(),
+                _ => "http".to_string(),
+            };
+            project.preview = entry.as_ref().zip(entry_port).map(|(entry, port)| {
+                format!(
+                    "{}://localhost:{port}{}",
+                    entry.scheme(),
+                    entry.path().trim_end_matches('/')
+                )
+            });
             for service in config
                 .environments
                 .values()
@@ -355,8 +392,22 @@ fn describe(path: &Path, options: &discover::Options, added: bool, on: bool) -> 
                 if !project.ports.contains(&service.port) {
                     project.ports.push(service.port);
                 }
+                let seen = project
+                    .addresses
+                    .iter()
+                    .any(|known| known.host == service.host && known.port == service.port);
+                if !seen {
+                    project.addresses.push(Address {
+                        host: service.host.clone(),
+                        port: service.port,
+                        local: format!("{}://localhost:{}", scheme_of(service.port), service.port),
+                    });
+                }
             }
             project.ports.sort_unstable();
+            project
+                .addresses
+                .sort_by_key(|address| (address.host.clone(), address.port));
             project.hostname = project.names.first().cloned();
             if project.names.is_empty() {
                 project.problem =

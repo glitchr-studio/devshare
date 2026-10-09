@@ -57,7 +57,7 @@ pub fn menu<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
     app.set_menu(menu)?;
     app.on_menu_event(|app, event| match event.id().as_ref() {
         "settings" => {
-            app.emit("sidebar", "open").ok();
+            app.emit_to("main", "settings", ()).ok();
         }
         "sidebar" => {
             app.emit("sidebar", "toggle").ok();
@@ -69,133 +69,86 @@ pub fn menu<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
 
 /// The menu bar icon's id.
 const TRAY: &str = "devshare";
+/// The window that drops down from it.
+pub const PANEL: &str = "panel";
 
-/// The menu bar icon: every project with a check to switch it on or off,
-/// Share or Stop sharing, Open DevShare, Quit.
+/// The menu bar icon. A click drops the panel down under it: the projects
+/// with a switch each, Share or Stop sharing, the window, Quit. A right
+/// click gives the same in a plain menu.
 pub fn tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
-    let mut icon = tauri::tray::TrayIconBuilder::with_id(TRAY)
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let menu = MenuBuilder::new(app)
+        .item(&MenuItemBuilder::with_id("open", "Open DevShare").build(app)?)
+        .item(&MenuItemBuilder::with_id("settings", "Settings…").build(app)?)
+        .separator()
+        .item(&MenuItemBuilder::with_id("quit", "Quit DevShare").build(app)?)
+        .build()?;
+    let mut icon = TrayIconBuilder::with_id(TRAY)
         .tooltip("DevShare")
-        .show_menu_on_left_click(true)
-        .on_menu_event(|app, event| chosen(app, event.id().as_ref()));
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "open" => show(app),
+            "settings" => {
+                show(app);
+                app.emit_to("main", "settings", ()).ok();
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                rect,
+                ..
+            } = event
+            {
+                toggle_panel(tray.app_handle(), rect);
+            }
+        });
     if let Some(image) = app.default_window_icon() {
-        icon = icon.icon(image.clone());
+        icon = icon.icon(image.clone()).icon_as_template(true);
     }
     icon.build(app)?;
-    refresh(app.handle());
     Ok(())
 }
 
-/// Rebuilds the menu bar icon's menu, from the list as it is now. In the
-/// background: the list is read from the disk.
-pub fn refresh<R: Runtime>(app: &tauri::AppHandle<R>) {
-    let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let Some(tray) = app.tray_by_id(TRAY) else {
-            return;
-        };
-        let Ok(projects) = crate::commands::projects(&app) else {
-            return;
-        };
-        let settings = devshare_core::environment::Settings::load().unwrap_or_default();
-        let listing = projects.list(&settings, &crate::commands::discovery_options());
-        let sharing = app.state::<crate::commands::Sharing>().current().is_some();
-        if let Ok(menu) = build(&app, &listing.projects, sharing) {
-            tray.set_menu(Some(menu)).ok();
-        }
-    });
-}
-
-fn build<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    projects: &[crate::projects::Project],
-    sharing: bool,
-) -> tauri::Result<tauri::menu::Menu<R>> {
-    use tauri::menu::{CheckMenuItemBuilder, IsMenuItem, PredefinedMenuItem};
-
-    let mut items: Vec<Box<dyn IsMenuItem<R>>> = Vec::new();
-    for project in projects {
-        let label = match &project.hostname {
-            Some(hostname) => format!("{}  —  {hostname}", project.name),
-            None => project.name.clone(),
-        };
-        let item = CheckMenuItemBuilder::with_id(format!("project:{}", project.folder), label)
-            .checked(project.on)
-            // While sharing, what is shared does not change.
-            .enabled(project.problem.is_none() && !sharing)
-            .build(app)?;
-        items.push(Box::new(item));
-    }
-    items.push(Box::new(PredefinedMenuItem::separator(app)?));
-    let switched = projects
-        .iter()
-        .filter(|project| project.on && project.problem.is_none())
-        .count();
-    let action = if sharing {
-        MenuItemBuilder::with_id("stop", "Stop sharing").build(app)?
-    } else {
-        let label = match switched {
-            0 => "Share".to_string(),
-            1 => "Share 1 project".to_string(),
-            many => format!("Share {many} projects"),
-        };
-        MenuItemBuilder::with_id("share", label)
-            .enabled(switched > 0)
-            .build(app)?
+/// Drops the panel down under the menu bar icon, or puts it away.
+fn toggle_panel<R: Runtime>(app: &tauri::AppHandle<R>, rect: tauri::Rect) {
+    let Some(panel) = app.get_webview_window(PANEL) else {
+        return;
     };
-    items.push(Box::new(action));
-    items.push(Box::new(PredefinedMenuItem::separator(app)?));
-    items.push(Box::new(
-        MenuItemBuilder::with_id("open", "Open DevShare").build(app)?,
-    ));
-    items.push(Box::new(
-        MenuItemBuilder::with_id("quit", "Quit DevShare").build(app)?,
-    ));
-    let references: Vec<&dyn IsMenuItem<R>> = items.iter().map(|item| item.as_ref()).collect();
-    MenuBuilder::new(app).items(&references).build()
-}
-
-/// What was chosen in the menu bar icon's menu.
-fn chosen<R: Runtime>(app: &tauri::AppHandle<R>, id: &str) {
-    if let Some(path) = id.strip_prefix("project:") {
-        if let Ok(projects) = crate::commands::projects(app) {
-            let path = std::path::PathBuf::from(path);
-            let on = projects.switched_on().contains(&path);
-            projects.switch(&path, !on).ok();
-            app.emit("projects", ()).ok();
-            refresh(app);
-        }
+    if panel.is_visible().unwrap_or(false) {
+        panel.hide().ok();
         return;
     }
-    match id {
-        "share" => {
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                let Ok(projects) = crate::commands::projects(&app) else {
-                    return;
-                };
-                let paths = projects
-                    .switched_on()
-                    .iter()
-                    .map(|path| path.display().to_string())
-                    .collect();
-                let (minutes, guests) = crate::commands::usual();
-                if let Err(error) =
-                    crate::commands::start_sharing(&app, paths, minutes, guests).await
-                {
-                    app.emit("trouble", error).ok();
-                    show(&app);
-                }
-            });
-        }
-        "stop" => {
-            if let Some(session) = app.state::<crate::commands::Sharing>().current() {
-                tauri::async_runtime::spawn(async move { session.stop().await });
-            }
-        }
-        "open" => show(app),
-        "quit" => app.exit(0),
-        _ => {}
-    }
+    let scale = panel.scale_factor().unwrap_or(1.0);
+    let icon = rect.position.to_physical::<f64>(scale);
+    let size = rect.size.to_physical::<f64>(scale);
+    let width = panel
+        .outer_size()
+        .map(|size| size.width as f64)
+        .unwrap_or(360.0 * scale);
+    let x = icon.x + size.width / 2.0 - width / 2.0;
+    let y = icon.y + size.height + 6.0 * scale;
+    panel.set_position(tauri::PhysicalPosition::new(x, y)).ok();
+    panel.emit("refresh", ()).ok();
+    panel.show().ok();
+    panel.set_focus().ok();
+}
+
+/// Tells the panel and the window that the session changed, so that both
+/// show it.
+pub fn refresh<R: Runtime>(app: &tauri::AppHandle<R>) {
+    changed(app, "");
+}
+
+/// Tells the panel and the window that the projects changed, and who did
+/// it: the window that did ignores its own change, the other shows it.
+pub fn changed<R: Runtime>(app: &tauri::AppHandle<R>, by: &str) {
+    app.emit("changed", by).ok();
 }
 
 /// Brings the window back, wherever it was.

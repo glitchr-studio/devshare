@@ -193,31 +193,30 @@ hand.
 
 ## The desktop app
 
-`app/` is the same thing with a window (Tauri). It lists the projects
-found in the folders it looks in (shown at the top, `~/Sites` and the usual
-ones to start with: add or remove any) and the ones added by hand (a folder,
-or a `devshare.toml` of any name), one line each, with a switch: what is
-switched on is shared when you press Share, for the time you choose or with
-no time limit. Any project can be taken off the list and put back; the ones
-with nothing to share are left off unless put back. A
-project switched on but not running gets a Start button, which runs its own
-`make up` when its Makefile has one (else `docker compose up -d`, or the
-`up = "…"` of its `devshare.toml`); Stop runs `make down` the same way.
-While sharing: the invitation, who is connected by their computer's login,
-disconnect someone, stop. In the sidebar (its button beside the window's
-own, ⌃⌘S, or DevShare › Settings… ⌘,): the folders to look in, the helper
-(installed with the system's administrator dialog), the device's
-certificate authority (install, renew, remove) and the general settings,
-edited in place, including the default start and stop commands; a
-project's own commands, kept on this computer only, are in its details.
-The menu bar icon lists the projects with a check each, and shares or stops
-without opening the window; closing the window leaves it there, ⌘Q quits.
-No terminal needed. It also joins: paste an invitation, or click "Open in the
-DevShare app" on an invitation page, which hands it over through a
-`devshare://` link; the app shows it and waits for a click, a page can never
-make it join on its own. `make app` runs it, `make dmg` builds an unsigned
-`dist/DevShare.app` and disk image; the `devshare://` link only works once
-the app is in Applications.
+`app/` is the same thing with a window (Tauri). The projects are at the
+left: the ones found in the folders it looks in (`~/Sites` and the usual
+ones to start with) and the ones added with + (a folder, a `devshare.toml`
+of any name, or a folder to look in), each with a switch and a dot that says
+whether it runs. A project's page has a live preview of it, its addresses
+(the names guests use, the same ports on localhost to open here), Start and
+Stop with the project's own `make up` / `make down` (else Docker Compose,
+else the commands given on the page or in the settings), and its folder.
+"Share and join" shares what is switched on, for the time you choose or with
+no time limit, and joins with an invitation; while sharing it shows the
+invitation, who is connected by their computer's login, and disconnects or
+stops. The cog opens the settings: the folders to look in, the helper
+(installed with the system's administrator dialog), the device's certificate
+authority (install, renew, remove) and the general settings, edited in place.
+The menu bar icon drops a panel down: the projects with a switch each,
+Share or Stop sharing, and the window; closing the window leaves DevShare in
+the menu bar, ⌘Q quits. No terminal needed.
+
+It also joins: paste an invitation, or click "Open in the DevShare app" on
+an invitation page, which hands it over through a `devshare://` link; the
+app shows it and waits for a click, a page can never make it join on its
+own. `make app` runs it, `make dmg` builds an unsigned `dist/DevShare.app`
+and disk image; the `devshare://` link only works once the app is in
+Applications.
 
 ## The iPhone app
 

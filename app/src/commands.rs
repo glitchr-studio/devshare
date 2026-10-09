@@ -96,8 +96,6 @@ struct Overview {
 #[tauri::command]
 async fn overview<R: Runtime>(app: AppHandle<R>) -> Result<Overview, String> {
     let projects = projects(&app)?;
-    // The window asks after every change it makes: the menu bar icon follows.
-    crate::native::refresh(&app);
     tauri::async_runtime::spawn_blocking(move || {
         // Settings that cannot be read are said, and the defaults are used.
         let (settings, problem) = match Settings::load() {
@@ -130,12 +128,24 @@ async fn overview<R: Runtime>(app: AppHandle<R>) -> Result<Overview, String> {
 
 /// Switches a project on or off: what Share shares.
 #[tauri::command]
-fn switch<R: Runtime>(app: AppHandle<R>, path: String, on: bool) -> Result<(), String> {
+fn switch<R: Runtime>(
+    app: AppHandle<R>,
+    window: tauri::Window<R>,
+    path: String,
+    on: bool,
+) -> Result<(), String> {
     projects(&app)?
         .switch(&PathBuf::from(path), on)
         .map_err(|error| format!("{error:#}"))?;
-    crate::native::refresh(&app);
+    crate::native::changed(&app, window.label());
     Ok(())
+}
+
+/// Ends the app: from the menu bar panel.
+#[tauri::command]
+fn quit<R: Runtime>(app: AppHandle<R>) {
+    on_event(&app, RunEvent::Exit);
+    app.exit(0);
 }
 
 /// Adds a project, switched on: its folder, or a devshare.toml of any name.
@@ -243,10 +253,16 @@ async fn pick<R: Runtime>(app: AppHandle<R>, file: bool) -> Option<String> {
 /// Takes a project off the list, found or added, until it is put back. Its
 /// folder is left as it is.
 #[tauri::command]
-fn remove_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<(), String> {
+fn remove_project<R: Runtime>(
+    app: AppHandle<R>,
+    window: tauri::Window<R>,
+    path: String,
+) -> Result<(), String> {
     projects(&app)?
         .remove(&PathBuf::from(path))
-        .map_err(|error| format!("{error:#}"))
+        .map_err(|error| format!("{error:#}"))?;
+    crate::native::changed(&app, window.label());
+    Ok(())
 }
 
 /// How this project is started and stopped on this computer, whatever its
@@ -263,12 +279,38 @@ fn set_commands<R: Runtime>(
         .map_err(|error| format!("{error:#}"))
 }
 
+/// Opens one of this machine's own addresses in the browser: a project's
+/// port, as the owner would check it. Nothing else is opened from here.
+#[tauri::command]
+fn open_local(url: String) -> Result<(), String> {
+    let parsed = url::Url::parse(&url).map_err(|error| error.to_string())?;
+    let local = matches!(parsed.scheme(), "http" | "https")
+        && matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    if !local {
+        return Err("only this machine's own addresses are opened from here".into());
+    }
+    tauri_plugin_opener::open_url(&url, None::<&str>).map_err(|error| error.to_string())
+}
+
+/// Shows a project's folder in the Finder (or the file manager).
+#[tauri::command]
+fn reveal(path: String) -> Result<(), String> {
+    let folder = folder_of(&PathBuf::from(path));
+    tauri_plugin_opener::reveal_item_in_dir(folder).map_err(|error| error.to_string())
+}
+
 /// Puts a project back on the list, even one with nothing to share.
 #[tauri::command]
-fn restore_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<(), String> {
+fn restore_project<R: Runtime>(
+    app: AppHandle<R>,
+    window: tauri::Window<R>,
+    path: String,
+) -> Result<(), String> {
     projects(&app)?
         .restore(&PathBuf::from(path))
-        .map_err(|error| format!("{error:#}"))
+        .map_err(|error| format!("{error:#}"))?;
+    crate::native::changed(&app, window.label());
+    Ok(())
 }
 
 /// The projects, by folder, whose services answer on this machine: the
@@ -327,6 +369,23 @@ fn answers(folder: &std::path::Path, options: &discover::Options) -> bool {
                     })
             })
     })
+}
+
+/// Puts the panel away: after a choice made in it that opens the window.
+#[tauri::command]
+fn hide_panel<R: Runtime>(app: AppHandle<R>) {
+    if let Some(panel) = app.get_webview_window(crate::native::PANEL) {
+        panel.hide().ok();
+    }
+}
+
+/// Brings the window to the front: from the panel.
+#[tauri::command]
+fn show_window<R: Runtime>(app: AppHandle<R>, page: Option<String>) {
+    crate::native::show(&app);
+    if let Some(page) = page {
+        app.emit_to("main", "navigate", page).ok();
+    }
 }
 
 /// Starts or stops a project its own way: `make up` / `make down` when its
@@ -584,18 +643,6 @@ pub(crate) async fn start_sharing<R: Runtime>(
     Ok(())
 }
 
-/// The usual duration (0: no time limit) and number of guests.
-pub(crate) fn usual() -> (u64, u32) {
-    let settings = Settings::load().unwrap_or_default();
-    let lifetime = settings.duration().unwrap_or(environment::DEFAULT_DURATION);
-    let minutes = if devshare_core::protocol::unlimited(lifetime.as_secs()) {
-        0
-    } else {
-        lifetime.as_secs().div_ceil(60)
-    };
-    (minutes, settings.guests())
-}
-
 /// Joins a session with its invitation. The window is told about it through
 /// the `joined` and `left` events.
 #[tauri::command]
@@ -700,6 +747,11 @@ pub fn create<R: Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
             remove_project,
             restore_project,
             set_commands,
+            open_local,
+            reveal,
+            hide_panel,
+            show_window,
+            quit,
             share,
             disconnect,
             invite,

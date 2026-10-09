@@ -1,0 +1,95 @@
+:root {
+  color-scheme: light dark;
+  --ground: rgba(246, 246, 247, 0.96);
+  --card: #ffffff;
+  --ink: #1c1b1a;
+  --muted: #6f6c68;
+  --line: #e1dfdb;
+  --present: #28a35b;
+  --danger: #d93d36;
+  --attention: #d08b1b;
+  --hover: rgba(0, 0, 0, 0.05);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: rgba(40, 39, 38, 0.96);
+    --card: #353433;
+    --ink: #eceae7;
+    --muted: #a09c97;
+    --line: #45433f;
+    --present: #5cc58a;
+    --danger: #f2877f;
+    --attention: #e3a94f;
+    --hover: rgba(255, 255, 255, 0.07);
+  }
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+/* The window is transparent: the panel draws its own rounded shape. */
+html, body { margin: 0; background: transparent; }
+body {
+  color: var(--ink);
+  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+.panel {
+  width: 360px;
+  background: var(--ground);
+  border-radius: 14px;
+  box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.18) inset;
+  padding: 12px 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+header { display: flex; align-items: baseline; gap: 10px; padding: 0 4px; }
+header strong { font-size: 15px; font-weight: 600; }
+.state { font-size: 12px; color: var(--muted); margin-left: auto; }
+.state.on { color: var(--present); }
+
+.cards { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow-y: auto; }
+.card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px 9px 12px;
+  background: var(--card);
+  border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+.card:hover { background: color-mix(in srgb, var(--card) 92%, var(--ink)); }
+.card .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--line); flex: none; }
+.card .dot.on { background: var(--present); }
+.card .dot.warn { background: var(--attention); }
+.card .dot.off { background: var(--danger); opacity: 0.55; }
+.card .who { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.card .who strong { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card .who span { font: 11px/1.3 ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card .who .sub { font-family: system-ui, sans-serif; }
+
+input.switch { appearance: none; -webkit-appearance: none; width: 34px; height: 20px; border-radius: 10px; background: var(--line); position: relative; flex: none; margin: 0; padding: 0; border: none; cursor: pointer; transition: background 0.15s; }
+input.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.3); transition: left 0.15s; }
+input.switch:checked { background: var(--present); }
+input.switch:checked::after { left: 16px; }
+input.switch:disabled { opacity: 0.4; cursor: default; }
+
+.share-bar { display: flex; align-items: center; gap: 10px; padding: 0 2px; }
+button { font: inherit; color: inherit; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 5px 12px; }
+button:hover:not(:disabled) { background: var(--hover); }
+button:disabled { opacity: 0.5; }
+button.primary { background: var(--ink); color: var(--ground); border-color: var(--ink); flex: 1; padding: 7px 12px; font-weight: 600; }
+button.primary:hover:not(:disabled) { background: var(--ink); opacity: 0.88; }
+button.primary.stop { background: var(--danger); border-color: var(--danger); color: #fff; }
+.muted { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.error { color: var(--danger); font-size: 12px; margin: 0; padding: 0 4px; white-space: pre-wrap; }
+
+footer { display: flex; align-items: center; gap: 2px; padding: 4px 2px 0; border-top: 1px solid var(--line); }
+footer .spacer { flex: 1; }
+button.tool { border: none; background: none; padding: 6px; color: var(--muted); line-height: 0; border-radius: 6px; }
+button.tool:hover:not(:disabled) { background: var(--hover); color: var(--ink); }

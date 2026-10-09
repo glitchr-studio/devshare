@@ -1,6 +1,6 @@
-// The window of the DevShare app. Before sharing: the projects, each
-// switched on or off, started or stopped; this computer's helper and
-// certificate authority; the settings. While sharing: the invitation, who
+// The window of the DevShare app: the projects at the left, each with its
+// switch and its page (addresses, preview, how it starts and stops); Share
+// and join; the settings behind the cog. While sharing: the invitation, who
 // is connected, disconnect, invite, stop. As a guest: join, leave, open an
 // address of the joined session, and the invitation a link handed over.
 //
@@ -33,28 +33,47 @@ function left(seconds) {
   return seconds > UNLIMITED ? 'No time limit' : `${clock(seconds)} left`;
 }
 
-function show(view) {
-  $('setup').hidden = view !== 'setup';
-  $('session').hidden = view !== 'session';
-  $('joined').hidden = view !== 'joined';
-}
+// The window: the projects at the left, one page at a time in the middle.
+// "Share and join" shows the session while one runs.
 
-// ---------------------------------------------------------- before sharing
-
-// The projects as last listed, by folder.
+const LABEL = 'main';
 let listed = [];
+let hiddenOnes = [];
+let selected = null;
+let page = 'share';
+let sharingNow = false;
+let joinedNow = false;
+let runningSet = new Set();
 // True while a join is under way: sharing waits for it.
 let joining = false;
+
+function show(view) {
+  page = view;
+  const main = view === 'share'
+    ? (sharingNow ? 'session' : joinedNow ? 'joined' : 'page-share')
+    : `page-${view}`;
+  for (const node of document.querySelectorAll('.content > main')) node.hidden = node.id !== main;
+  for (const row of document.querySelectorAll('.nav-row')) {
+    const mine = row.dataset.page === view && (view !== 'project' || row.dataset.folder === selected);
+    row.classList.toggle('selected', mine);
+  }
+  // A preview only loads while its page is shown.
+  if (view !== 'project') $('preview').removeAttribute('src');
+  if (view === 'settings') {
+    refreshComputer();
+    loadSettings();
+  }
+}
+
+// ---------------------------------------------------------- the projects
 
 async function setup(ended) {
   $('ended').hidden = !ended;
   $('ended').textContent = ended ? `The session is over: ${ended}.` : '';
-  show('setup');
+  show('share');
   await refreshProjects();
 }
 
-// One line per project, in the same order whatever is switched: name, the
-// name guests use, whether it runs; the rest on demand.
 async function refreshProjects() {
   let overview;
   try {
@@ -64,11 +83,16 @@ async function refreshProjects() {
     return;
   }
   listed = overview.projects;
+  hiddenOnes = overview.hidden;
   showSources(overview.folders);
   if (overview.problem) $('error').textContent = overview.problem;
+
   $('none').hidden = listed.length > 0;
   $('projects').replaceChildren(...listed.map(projectRow));
-  showHidden(overview.hidden);
+  const button = $('show-hidden');
+  button.hidden = hiddenOnes.length === 0;
+  button.textContent = `${hiddenOnes.length} not listed`;
+  if (page === 'hidden') renderHidden();
 
   // The usual duration and number of guests come from the general settings.
   const minutes = String(overview.minutes);
@@ -79,42 +103,188 @@ async function refreshProjects() {
   }
   $('minutes').value = minutes;
   $('limit').value = overview.guests;
+
+  const current = listed.find((project) => project.folder === selected);
+  if (current) {
+    renderProject(current);
+  } else if (page === 'project') {
+    selected = null;
+    show('share');
+  }
   chosen();
-  refreshRunning();
+  show(page);
+  await refreshRunning();
 }
 
-// The folders projects are looked for in, in the sidebar, each removable.
-function showSources(folders) {
-  $('sources').replaceChildren(...folders.map((folder) => {
-    const remove = element('button', { type: 'button', className: 'chip-remove', textContent: '×', title: `Stop looking in ${home(folder)}` });
-    remove.addEventListener('click', async () => {
-      await invoke('remove_source', { path: folder }).catch((error) => { $('error').textContent = String(error); });
-      refreshProjects();
-    });
-    return element('li', {}, [element('span', { textContent: home(folder), title: folder }), remove]);
+// `/Users/me/Sites` as `~/Sites`.
+function home(folder) {
+  return folder.replace(/^\/Users\/[^/]+/, '~').replace(/^\/home\/[^/]+/, '~');
+}
+
+function switchFor(project) {
+  const toggle = element('input', { type: 'checkbox', className: 'switch', checked: project.on, disabled: Boolean(project.problem) });
+  toggle.title = project.on ? 'Shared when you press Share' : 'Not shared';
+  toggle.addEventListener('change', async () => {
+    project.on = toggle.checked;
+    for (const other of document.querySelectorAll(`input.switch[data-folder="${CSS.escape(project.folder)}"]`)) {
+      other.checked = project.on;
+    }
+    chosen();
+    await invoke('switch', { path: project.folder, on: toggle.checked }).catch((error) => { $('error').textContent = String(error); });
+  });
+  toggle.dataset.folder = project.folder;
+  return toggle;
+}
+
+function summaryOf(project) {
+  const running = runningSet.has(project.folder);
+  if (project.problem) return project.problem;
+  const names = project.names.length === 1 ? '1 name' : `${project.names.length} names`;
+  return `${names} · ports ${project.ports.join(', ')} · ${running ? 'running' : 'not started'}`;
+}
+
+function projectRow(project) {
+  const dot = element('span', { className: 'dot' });
+  const summary = element('span', { className: 'nav-summary' });
+  const row = element('li', { className: 'nav-row' }, [
+    switchFor(project),
+    element('span', { className: 'nav-main' }, [
+      element('strong', { textContent: project.name }),
+      element('span', { className: 'nav-sub mono', textContent: project.hostname ?? (project.problem ? 'cannot be shared' : '') }),
+    ]),
+    dot,
+    summary,
+  ]);
+  row.dataset.page = 'project';
+  row.dataset.folder = project.folder;
+  row.addEventListener('click', (event) => {
+    if (event.target.closest('input')) return;
+    selected = project.folder;
+    renderProject(project);
+    show('project');
+  });
+  row.running = (running) => {
+    dot.className = `dot ${project.problem ? 'warn' : running ? 'on' : ''}`;
+    summary.textContent = summaryOf(project);
+  };
+  row.running(runningSet.has(project.folder));
+  return row;
+}
+
+// Which projects answer on their ports.
+async function refreshRunning() {
+  const folders = listed.map((project) => project.folder);
+  runningSet = new Set(await invoke('running', { paths: folders }).catch(() => []));
+  for (const row of $('projects').children) row.running(runningSet.has(row.dataset.folder));
+  const current = listed.find((project) => project.folder === selected);
+  if (current && page === 'project') projectState(current);
+}
+setInterval(() => { if (!document.hidden) refreshRunning(); }, 8000);
+
+// ------------------------------------------------------------ one project
+
+function renderProject(project) {
+  $('project-name').textContent = project.name;
+  $('project-host').textContent = project.hostname ?? '';
+  $('project-switch').checked = project.on;
+  $('project-switch').disabled = Boolean(project.problem);
+  $('project-switch').dataset.folder = project.folder;
+  $('project-problem').hidden = !project.problem;
+  $('project-problem').textContent = project.problem ?? '';
+  $('project-folder').textContent = home(project.folder);
+  $('project-addresses').replaceChildren(...project.addresses.map((address) => {
+    const open = element('button', { type: 'button', className: 'small', textContent: 'Open' });
+    open.addEventListener('click', () => invoke('open_local', { url: address.local }).catch((error) => { $('project-problem').hidden = false; $('project-problem').textContent = String(error); }));
+    return element('li', {}, [
+      element('span', { className: 'name mono', textContent: `${address.host}:${address.port}` }),
+      element('span', { className: 'local mono', textContent: address.local }),
+      open,
+    ]);
   }));
-  if (folders.length === 0) $('sources').append(element('li', { className: 'muted', textContent: 'No folder: projects are only the ones added.' }));
+  const form = $('project-commands').elements;
+  form.up.value = project.local_up ?? '';
+  form.up.placeholder = project.usual_up ?? 'nothing known: say how';
+  form.down.value = project.local_down ?? '';
+  form.down.placeholder = project.usual_down ?? 'nothing known: say how';
+  $('project-commands-said').textContent = '';
+  projectState(project);
 }
 
-$('add-source').addEventListener('click', async () => {
-  const folder = await invoke('pick', { file: false }).catch(() => null);
-  if (!folder) return;
+function projectState(project) {
+  const running = runningSet.has(project.folder);
+  $('project-state').textContent = project.problem ? '' : running ? 'Running' : 'Not started';
+  $('project-state').className = running ? 'state on' : 'state';
+  $('project-start').hidden = running || !project.startable || Boolean(project.problem);
+  $('project-stop').hidden = !running || !project.startable;
+  if (running && project.preview) {
+    if ($('preview').getAttribute('src') !== project.preview) $('preview').src = project.preview;
+    $('preview-wrap').hidden = false;
+    $('preview-note').textContent = project.preview;
+  } else {
+    $('preview').removeAttribute('src');
+    $('preview-wrap').hidden = true;
+    $('preview-note').textContent = running ? 'No entry point to preview: give the project one in its devshare.toml.' : project.startable ? 'Start the project to see it here.' : 'Started some other way: it shows here once it answers.';
+  }
+}
+
+function currentProject() {
+  return listed.find((project) => project.folder === selected);
+}
+
+$('project-switch').addEventListener('change', async (event) => {
+  const project = currentProject();
+  if (!project) return;
+  project.on = event.target.checked;
+  for (const other of document.querySelectorAll(`#projects input.switch[data-folder="${CSS.escape(project.folder)}"]`)) other.checked = project.on;
+  chosen();
+  await invoke('switch', { path: project.folder, on: project.on }).catch((error) => { $('project-problem').hidden = false; $('project-problem').textContent = String(error); });
+});
+$('project-start').addEventListener('click', () => { const project = currentProject(); if (project) runProject(project, 'up', $('project-start')); });
+$('project-stop').addEventListener('click', () => { const project = currentProject(); if (project) runProject(project, 'down', $('project-stop')); });
+$('project-reveal').addEventListener('click', () => { if (selected) invoke('reveal', { path: selected }).catch(() => {}); });
+$('project-share-alone').addEventListener('click', () => { if (selected) share([selected], $('project-share-alone')); });
+$('project-remove').addEventListener('click', async () => {
+  if (!selected) return;
+  await invoke('remove_project', { path: selected });
+  selected = null;
+  page = 'share';
+  refreshProjects();
+});
+$('project-commands').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const project = currentProject();
+  if (!project) return;
+  const form = $('project-commands').elements;
   try {
-    await invoke('add_source', { path: folder });
-    refreshProjects();
+    await invoke('set_commands', { path: project.folder, up: form.up.value.trim() || null, down: form.down.value.trim() || null });
+    $('project-commands-said').textContent = 'Saved.';
+    await refreshProjects();
   } catch (error) {
-    $('error').textContent = String(error);
+    $('project-commands-said').textContent = String(error);
   }
 });
 
-// What is not listed: taken off, or found with nothing to share. Folded,
-// each one click from coming back.
-function showHidden(hidden) {
-  const button = $('show-hidden');
-  button.hidden = hidden.length === 0;
-  button.textContent = `${hidden.length} not listed`;
-  if (hidden.length === 0) $('hidden').hidden = true;
-  $('hidden').replaceChildren(...hidden.map((project) => {
+// Starts or stops a project its own way (make up, docker compose up -d).
+async function runProject(project, action, button) {
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = action === 'up' ? 'Starting…' : 'Stopping…';
+  $('project-problem').hidden = true;
+  try {
+    await invoke('run_project', { path: project.folder, action });
+  } catch (error) {
+    $('project-problem').hidden = false;
+    $('project-problem').textContent = String(error);
+  }
+  button.disabled = false;
+  button.textContent = label;
+  refreshRunning();
+}
+
+// ----------------------------------------------------------- not listed
+
+function renderHidden() {
+  $('hidden').replaceChildren(...hiddenOnes.map((project) => {
     const back = element('button', { type: 'button', className: 'small', textContent: 'Put back' });
     back.addEventListener('click', async () => {
       await invoke('restore_project', { path: project.folder });
@@ -128,174 +298,120 @@ function showHidden(hidden) {
   }));
 }
 
-$('show-hidden').addEventListener('click', () => { $('hidden').hidden = !$('hidden').hidden; });
+$('show-hidden').addEventListener('click', () => { renderHidden(); show('hidden'); });
 
-// `/Users/me/Sites` as `~/Sites`.
-function home(folder) {
-  return folder.replace(/^\/Users\/[^/]+/, '~').replace(/^\/home\/[^/]+/, '~');
-}
+// --------------------------------------------------------------- adding
 
-function projectRow(project) {
-  const toggle = element('input', { type: 'checkbox', className: 'switch', checked: project.on, disabled: Boolean(project.problem) });
-  toggle.title = project.on ? 'Shared when you press Share' : 'Not shared';
-  toggle.addEventListener('change', async () => {
-    project.on = toggle.checked;
-    row.running(row.isRunning);
-    chosen();
-    await invoke('switch', { path: project.folder, on: toggle.checked }).catch(() => {});
-  });
-
-  const state = element('span', { className: 'state' });
-  const start = element('button', { type: 'button', className: 'small', textContent: 'Start', hidden: true });
-  start.addEventListener('click', () => runProject(project, 'up', start, state));
-
-  const more = element('button', { type: 'button', className: 'disclose', textContent: '›', title: 'Details' });
-  const details = element('div', { className: 'details', hidden: true }, [
-    element('span', { className: 'mono', textContent: project.names.join('  ') || '—' }),
-    element('span', { className: 'muted', textContent: project.ports.length ? `ports ${project.ports.join(', ')}` : '' }),
-    element('span', { className: 'folder', textContent: home(project.folder) }),
-    ...(project.problem ? [element('span', { className: 'error', textContent: project.problem })] : []),
-  ]);
-  const stop = element('button', { type: 'button', className: 'small', textContent: 'Stop', hidden: true });
-  stop.addEventListener('click', () => runProject(project, 'down', stop, state));
-  details.append(stop);
-
-  // How this project starts and stops on this computer, over what its
-  // devshare.toml and the defaults say.
-  const upField = element('input', { type: 'text', value: project.local_up ?? '', placeholder: project.usual_up ?? 'nothing known: say how', spellcheck: false });
-  const downField = element('input', { type: 'text', value: project.local_down ?? '', placeholder: project.usual_down ?? 'nothing known: say how', spellcheck: false });
-  const keep = element('button', { type: 'button', className: 'small', textContent: 'Save' });
-  const kept = element('span', { className: 'muted' });
-  keep.addEventListener('click', async () => {
-    try {
-      await invoke('set_commands', { path: project.folder, up: upField.value.trim() || null, down: downField.value.trim() || null });
-      kept.textContent = 'Saved.';
-      project.local_up = upField.value.trim() || null;
-      project.startable = Boolean(project.local_up || project.usual_up);
-      row.running(row.isRunning);
-    } catch (error) {
-      kept.textContent = String(error);
+function closeAdd() { $('add-choices').hidden = true; }
+$('add-menu').addEventListener('click', (event) => {
+  event.stopPropagation();
+  $('add-choices').hidden = !$('add-choices').hidden;
+});
+document.addEventListener('click', closeAdd);
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeAdd(); });
+for (const choice of document.querySelectorAll('#add-choices button')) {
+  choice.addEventListener('click', async () => {
+    closeAdd();
+    const kind = choice.dataset.add;
+    const picked = await invoke('pick', { file: kind === 'file' }).catch(() => null);
+    if (!picked) return;
+    if (kind === 'source') {
+      try {
+        await invoke('add_source', { path: picked });
+        refreshProjects();
+      } catch (error) {
+        $('error').textContent = String(error);
+      }
+    } else {
+      add(picked);
     }
   });
-  details.append(element('div', { className: 'commands' }, [
-    element('label', {}, ['Start with', upField]),
-    element('label', {}, ['Stop with', downField]),
-    element('span', { className: 'commands-actions' }, [keep, kept]),
-  ]));
-  // Any project can go, found or added, until it is put back.
-  const remove = element('button', { type: 'button', className: 'small', textContent: 'Take off the list' });
-  remove.addEventListener('click', async () => {
-    await invoke('remove_project', { path: project.folder });
-    refreshProjects();
-  });
-  details.append(remove);
-  more.addEventListener('click', () => {
-    details.hidden = !details.hidden;
-    more.classList.toggle('open', !details.hidden);
-  });
-
-  const extra = project.names.length > 1 ? ` +${project.names.length - 1}` : '';
-  const row = element('li', {}, [
-    element('label', { className: 'line' }, [
-      toggle,
-      element('strong', { textContent: project.name }),
-      element('span', { className: 'mono muted', textContent: project.hostname ? project.hostname + extra : '' }),
-    ]),
-    state,
-    start,
-    more,
-    details,
-  ]);
-  row.dataset.folder = project.folder;
-  // What runs is said for the projects switched on: the others are not
-  // the owner's concern right now.
-  row.isRunning = false;
-  row.running = (running) => {
-    row.isRunning = running;
-    state.textContent = !project.on ? '' : running ? 'running' : 'not started';
-    state.className = running ? 'state running' : 'state stopped';
-    start.hidden = !project.on || running || !project.startable;
-    stop.hidden = !running || !project.startable;
-  };
-  return row;
 }
 
-// Which projects answer on their ports.
-async function refreshRunning() {
-  const folders = listed.map((project) => project.folder);
-  const running = new Set(await invoke('running', { paths: folders }).catch(() => []));
-  for (const row of $('projects').children) {
-    row.running(running.has(row.dataset.folder));
-  }
-}
-
-// Starts or stops a project its own way (make up, docker compose up -d).
-async function runProject(project, action, button, state) {
-  const label = button.textContent;
-  button.disabled = true;
-  button.textContent = action === 'up' ? 'Starting…' : 'Stopping…';
-  $('error').textContent = '';
+// A project is added by its folder or its devshare.toml: picked, or dropped
+// on the window. A folder holding projects becomes a folder to look in.
+async function add(path) {
+  if (!path || sharingNow) return;
   try {
-    await invoke('run_project', { path: project.folder, action });
-  } catch (error) {
-    $('error').textContent = `${project.name}: ${error}`;
-  }
-  button.disabled = false;
-  button.textContent = label;
-  refreshRunning();
-}
-
-function chosen() {
-  const folders = listed.filter((project) => project.on && !project.problem).map((project) => project.folder);
-  $('share').disabled = folders.length === 0 || joining;
-  $('share').textContent = folders.length > 1 ? `Share ${folders.length} projects` : 'Share';
-  return folders;
-}
-
-// A project is added by its folder: picked, or dropped on the window.
-async function add(folder) {
-  if (!folder || !$('session').hidden) return;
-  $('added').className = 'muted';
-  $('added').textContent = 'Reading the project…';
-  try {
-    const project = await invoke('add_project', { path: folder });
-    $('added').textContent = project.startsWith('projects in ') ? `Now looking for ${project}.` : `${project} was added and switched on.`;
+    const name = await invoke('add_project', { path });
     await refreshProjects();
+    if (!name.startsWith('projects in ')) {
+      const added = listed.find((project) => project.name === name || project.folder.endsWith(`/${name}`));
+      if (added) {
+        selected = added.folder;
+        renderProject(added);
+        show('project');
+      }
+    }
   } catch (error) {
-    $('added').className = 'error';
-    $('added').textContent = String(error);
+    $('error').textContent = String(error);
+    show('share');
   }
 }
-
-$('add').addEventListener('click', async () => {
-  const folder = await invoke('pick', { file: false }).catch(() => null);
-  if (folder) add(folder);
-});
-$('add-file').addEventListener('click', async () => {
-  const file = await invoke('pick', { file: true }).catch(() => null);
-  if (file) add(file);
-});
 listen('tauri://drag-drop', (event) => add(event.payload.paths[0]));
 
-$('choose').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const folders = chosen();
-  if (folders.length === 0) return;
+// ------------------------------------------------------------- sharing
+
+function chosen() {
+  const on = listed.filter((project) => project.on && !project.problem);
+  $('share').disabled = on.length === 0 || joining;
+  $('share').textContent = on.length > 1 ? `Share ${on.length} projects` : 'Share';
+  $('share-summary').textContent = on.length
+    ? `Switched on: ${on.map((project) => project.name).join(', ')}.`
+    : 'Switch on the projects to share, in the list at the left.';
+  $('nav-share-note').textContent = sharingNow ? 'Sharing' : joinedNow ? 'In a session' : on.length ? `${on.length} switched on` : '';
+  return on.map((project) => project.folder);
+}
+
+async function share(paths, button) {
   $('error').textContent = '';
-  const label = $('share').textContent;
-  $('share').disabled = true;
-  $('share').textContent = 'Starting…';
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Starting…';
   try {
     await invoke('share', {
-      paths: folders,
+      paths,
       minutes: Number($('minutes').value),
       guests: Number($('limit').value),
     });
   } catch (error) {
     $('error').textContent = String(error);
+    show('share');
   }
-  $('share').textContent = label;
+  button.textContent = label;
+  button.disabled = false;
   chosen();
+}
+
+$('choose').addEventListener('submit', (event) => {
+  event.preventDefault();
+  const folders = chosen();
+  if (folders.length) share(folders, $('share'));
+});
+
+// ------------------------------------------------------------- settings
+
+function showSources(folders) {
+  $('sources').replaceChildren(...folders.map((folder) => {
+    const remove = element('button', { type: 'button', className: 'tool', textContent: '×', title: `Stop looking in ${home(folder)}` });
+    remove.addEventListener('click', async () => {
+      await invoke('remove_source', { path: folder }).catch((error) => { $('computer-error').textContent = String(error); });
+      refreshProjects();
+    });
+    return element('li', {}, [element('span', { textContent: home(folder), title: folder }), remove]);
+  }));
+  if (folders.length === 0) $('sources').append(element('li', { className: 'muted', textContent: 'No folder: only the projects added by hand are listed.' }));
+}
+
+$('add-source').addEventListener('click', async () => {
+  const folder = await invoke('pick', { file: false }).catch(() => null);
+  if (!folder) return;
+  try {
+    await invoke('add_source', { path: folder });
+    refreshProjects();
+  } catch (error) {
+    $('computer-error').textContent = String(error);
+  }
 });
 
 // The helper and this device's certificate authority.
@@ -349,37 +465,13 @@ for (const action of ['install', 'renew', 'remove']) {
   $(`authority-${action}`).addEventListener('click', (event) => act(event.currentTarget, 'authority', { action }));
 }
 
-// The sidebar: open unless closed, remembered on this computer; toggled
-// from its button, View > Show or Hide Sidebar (⌃⌘S), opened by
-// DevShare > Settings… (⌘,).
-if (/Mac/.test(navigator.platform)) document.documentElement.classList.add('mac');
-
-function remembered() {
-  try { return localStorage.getItem('sidebar') !== 'closed'; } catch (error) { return true; }
-}
-
-function sidebar(open) {
-  document.body.classList.toggle('no-sidebar', !open);
-  try { localStorage.setItem('sidebar', open ? 'open' : 'closed'); } catch (error) { /* not kept */ }
-  if (open) {
-    refreshComputer();
-    loadSettings();
-  }
-}
-
-$('toggle-sidebar').addEventListener('click', () => sidebar(document.body.classList.contains('no-sidebar')));
-listen('sidebar', (event) => sidebar(event.payload === 'open' || document.body.classList.contains('no-sidebar')));
-sidebar(remembered());
-
-// The general settings, edited in place.
 const SETTINGS = ['duration', 'guests', 'domain', 'up', 'down', 'relay', 'server', 'join'];
 
 async function loadSettings() {
   try {
     const settings = await invoke('settings');
     for (const name of SETTINGS) {
-      const value = settings[name];
-      $('settings').elements[name].value = Array.isArray(value) ? value.join(', ') : value ?? '';
+      $('settings').elements[name].value = settings[name] ?? '';
     }
   } catch (error) {
     $('settings-said').textContent = String(error);
@@ -401,6 +493,43 @@ $('settings').addEventListener('submit', async (event) => {
     $('settings-said').textContent = String(error);
   }
 });
+
+// ------------------------------------------------------------ navigation
+
+$('nav-share').addEventListener('click', () => show('share'));
+$('open-settings').addEventListener('click', () => show('settings'));
+listen('settings', () => show('settings'));
+listen('navigate', (event) => {
+  const where = String(event.payload);
+  if (where.startsWith('project:')) {
+    selected = where.slice('project:'.length);
+    const project = currentProject();
+    if (project) renderProject(project);
+    show(project ? 'project' : 'share');
+  } else {
+    show(where);
+  }
+});
+// Changes made from the menu bar panel.
+listen('changed', (event) => { if (event.payload !== LABEL) refreshProjects(); });
+listen('trouble', (event) => { $('error').textContent = String(event.payload); show('share'); });
+
+// The sidebar: open unless closed, remembered on this computer; toggled
+// from its button or View › Show or Hide Sidebar (⌃⌘S).
+if (/Mac/.test(navigator.platform)) document.documentElement.classList.add('mac');
+
+function remembered() {
+  try { return localStorage.getItem('sidebar') !== 'closed'; } catch (error) { return true; }
+}
+
+function sidebar(open) {
+  document.body.classList.toggle('no-sidebar', !open);
+  try { localStorage.setItem('sidebar', open ? 'open' : 'closed'); } catch (error) { /* not kept */ }
+}
+
+$('toggle-sidebar').addEventListener('click', () => sidebar(document.body.classList.contains('no-sidebar')));
+listen('sidebar', () => sidebar(document.body.classList.contains('no-sidebar')));
+sidebar(remembered());
 
 // ----------------------------------------------------------- while sharing
 
@@ -523,7 +652,9 @@ function render(session) {
       element('span', { textContent: notice.text }),
     ])));
 
-  show('session');
+  sharingNow = true;
+  chosen();
+  if (page === 'share') show('share');
 }
 
 function forget() {
@@ -558,7 +689,8 @@ $('stop').addEventListener('click', () => invoke('stop'));
 // An invitation from a link is only ever shown: joining is the owner's
 // click, never the page's.
 function handed(invitation) {
-  if (!invitation || !$('joined').hidden || !$('session').hidden) return;
+  if (!invitation || joinedNow || sharingNow) return;
+  show('share');
   $('join-invitation').value = invitation;
   $('handed').hidden = false;
   $('join-error').textContent = '';
@@ -626,13 +758,16 @@ function renderJoined(view) {
         ]))),
     ]));
   }
-  show('joined');
+  joinedNow = true;
+  chosen();
+  if (page === 'share') show('share');
 }
 
 $('leave').addEventListener('click', () => invoke('leave'));
 
 listen('joined', (event) => renderJoined(event.payload));
 listen('left', (event) => {
+  joinedNow = false;
   joinedOnce = false;
   $('joined-environments').replaceChildren();
   setup(event.payload);
@@ -640,11 +775,11 @@ listen('left', (event) => {
 listen('invitation', (event) => handed(event.payload));
 
 // Changes made from the menu bar icon.
-listen('projects', () => { if (!$('setup').hidden) refreshProjects(); });
 listen('trouble', (event) => { $('error').textContent = String(event.payload); });
 
 listen('session', (event) => render(event.payload));
 listen('ended', (event) => {
+  sharingNow = false;
   forget();
   setup(event.payload);
 });
