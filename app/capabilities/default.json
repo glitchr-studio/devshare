@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "What the DevShare window may ask of the app: its own commands and events.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "core:window:allow-start-dragging"]
 }

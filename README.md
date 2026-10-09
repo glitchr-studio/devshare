@@ -204,10 +204,15 @@ project switched on but not running gets a Start button, which runs its own
 `make up` when its Makefile has one (else `docker compose up -d`, or the
 `up = "…"` of its `devshare.toml`); Stop runs `make down` the same way.
 While sharing: the invitation, who is connected by their computer's login,
-disconnect someone, stop. In a sidebar (Settings): the helper (installed
-with the system's administrator dialog), the device's certificate authority
-(install, renew, remove) and the general settings, edited in place: no
-terminal needed. It also joins: paste an invitation, or click "Open in the
+disconnect someone, stop. In the sidebar (its button beside the window's
+own, ⌃⌘S, or DevShare › Settings… ⌘,): the folders to look in, the helper
+(installed with the system's administrator dialog), the device's
+certificate authority (install, renew, remove) and the general settings,
+edited in place, including the default start and stop commands; a
+project's own commands, kept on this computer only, are in its details.
+The menu bar icon lists the projects with a check each, and shares or stops
+without opening the window; closing the window leaves it there, ⌘Q quits.
+No terminal needed. It also joins: paste an invitation, or click "Open in the
 DevShare app" on an invitation page, which hands it over through a
 `devshare://` link; the app shows it and waits for a click, a page can never
 make it join on its own. `make app` runs it, `make dmg` builds an unsigned

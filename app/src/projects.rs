@@ -21,6 +21,8 @@ const ON: &str = "selected.json";
 const HIDDEN: &str = "hidden.json";
 /// Projects with nothing to share that were put back on the list anyway.
 const SHOWN: &str = "shown.json";
+/// How the owner starts and stops some projects on this computer.
+const COMMANDS: &str = "commands.json";
 
 pub struct Projects {
     folder: PathBuf,
@@ -42,6 +44,13 @@ pub struct Project {
     pub added: bool,
     /// Whether the app knows how to start and stop it.
     pub startable: bool,
+    /// The owner's own start and stop commands for it, on this computer.
+    pub local_up: Option<String>,
+    pub local_down: Option<String>,
+    /// What starts and stops it without those: its devshare.toml, the
+    /// owner's defaults, or what it is.
+    pub usual_up: Option<String>,
+    pub usual_down: Option<String>,
     /// Why it cannot be shared as it is.
     pub problem: Option<String>,
 }
@@ -145,6 +154,53 @@ impl Projects {
         self.put(SHOWN, path, true)
     }
 
+    /// The owner's own start and stop commands for a project.
+    pub fn local_commands(&self, path: &Path) -> discover::Commands {
+        self.all_commands()
+            .remove(&path.display().to_string())
+            .unwrap_or_default()
+    }
+
+    fn all_commands(&self) -> std::collections::BTreeMap<String, discover::Commands> {
+        std::fs::read_to_string(self.folder.join(COMMANDS))
+            .ok()
+            .and_then(|content| {
+                serde_json::from_str::<
+                    std::collections::BTreeMap<String, (Option<String>, Option<String>)>,
+                >(&content)
+                .ok()
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(path, (up, down))| (path, discover::Commands { up, down }))
+            .collect()
+    }
+
+    /// Sets them; empty ones go, and the usual ones apply again.
+    pub fn set_local_commands(&self, path: &Path, commands: discover::Commands) -> Result<()> {
+        let given = |value: Option<String>| {
+            value
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        };
+        let mut all: std::collections::BTreeMap<String, (Option<String>, Option<String>)> = self
+            .all_commands()
+            .into_iter()
+            .map(|(path, commands)| (path, (commands.up, commands.down)))
+            .collect();
+        let (up, down) = (given(commands.up), given(commands.down));
+        let key = path.display().to_string();
+        if up.is_none() && down.is_none() {
+            all.remove(&key);
+        } else {
+            all.insert(key, (up, down));
+        }
+        std::fs::create_dir_all(&self.folder)?;
+        let file = self.folder.join(COMMANDS);
+        std::fs::write(&file, serde_json::to_string_pretty(&all)?)
+            .with_context(|| format!("writing {}", file.display()))
+    }
+
     pub fn switch(&self, path: &Path, on: bool) -> Result<()> {
         self.put(ON, path, on)
     }
@@ -175,8 +231,23 @@ impl Projects {
             projects: Vec::new(),
             hidden: Vec::new(),
         };
+        let defaults = discover::Commands {
+            up: settings.up.clone(),
+            down: settings.down.clone(),
+        };
+        let local = self.all_commands();
         for path in paths {
-            let project = describe(&path, options, added.contains(&path), on.contains(&path));
+            let mut project = describe(&path, options, added.contains(&path), on.contains(&path));
+            let folder = folder_of(&path);
+            let mine = local
+                .get(&path.display().to_string())
+                .cloned()
+                .unwrap_or_default();
+            let usual =
+                discover::Commands::resolve(&folder, &discover::Commands::default(), &defaults);
+            project.startable = mine.up.is_some() || usual.up.is_some();
+            (project.local_up, project.local_down) = (mine.up, mine.down);
+            (project.usual_up, project.usual_down) = (usual.up, usual.down);
             let why = if hidden.contains(&path) {
                 Some("taken off the list")
             } else if project.names.is_empty() && !shown.contains(&path) {
@@ -255,7 +326,6 @@ fn describe(path: &Path, options: &discover::Options, added: bool, on: bool) -> 
     } else {
         discover::discover(path, options).map(|found| (found.project.clone(), found.config()))
     };
-    let startable = discover::Commands::of(&folder).up.is_some();
     let mut project = Project {
         folder: path.display().to_string(),
         name: fallback,
@@ -264,7 +334,11 @@ fn describe(path: &Path, options: &discover::Options, added: bool, on: bool) -> 
         ports: Vec::new(),
         on,
         added,
-        startable,
+        startable: false,
+        local_up: None,
+        local_down: None,
+        usual_up: None,
+        usual_down: None,
         problem: None,
     };
     match read {

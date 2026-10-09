@@ -26,7 +26,7 @@ const LONGEST_INVITATION: usize = 2048;
 
 /// The session in progress, if any.
 #[derive(Default)]
-struct Sharing(Mutex<Option<Session>>);
+pub(crate) struct Sharing(Mutex<Option<Session>>);
 
 /// The session this computer joined, if any.
 #[derive(Default)]
@@ -50,14 +50,14 @@ pub fn invitation_of(link: &url::Url) -> Option<String> {
 }
 
 impl Sharing {
-    fn current(&self) -> Option<Session> {
+    pub(crate) fn current(&self) -> Option<Session> {
         self.0.lock().unwrap().clone()
     }
 }
 
 /// The app's list of projects, kept with the app's data. `DEVSHARE_APP_DATA`
 /// names another folder for it.
-fn projects<R: Runtime>(app: &AppHandle<R>) -> Result<Projects, String> {
+pub(crate) fn projects<R: Runtime>(app: &AppHandle<R>) -> Result<Projects, String> {
     let folder = match std::env::var_os("DEVSHARE_APP_DATA") {
         Some(folder) => PathBuf::from(folder),
         None => app
@@ -68,7 +68,7 @@ fn projects<R: Runtime>(app: &AppHandle<R>) -> Result<Projects, String> {
     Ok(Projects::in_folder(folder))
 }
 
-fn discovery_options() -> discover::Options {
+pub(crate) fn discovery_options() -> discover::Options {
     discover::Options {
         hostname: None,
         domain: Settings::load().ok().map(|settings| settings.domain()),
@@ -96,6 +96,8 @@ struct Overview {
 #[tauri::command]
 async fn overview<R: Runtime>(app: AppHandle<R>) -> Result<Overview, String> {
     let projects = projects(&app)?;
+    // The window asks after every change it makes: the menu bar icon follows.
+    crate::native::refresh(&app);
     tauri::async_runtime::spawn_blocking(move || {
         // Settings that cannot be read are said, and the defaults are used.
         let (settings, problem) = match Settings::load() {
@@ -131,7 +133,9 @@ async fn overview<R: Runtime>(app: AppHandle<R>) -> Result<Overview, String> {
 fn switch<R: Runtime>(app: AppHandle<R>, path: String, on: bool) -> Result<(), String> {
     projects(&app)?
         .switch(&PathBuf::from(path), on)
-        .map_err(|error| format!("{error:#}"))
+        .map_err(|error| format!("{error:#}"))?;
+    crate::native::refresh(&app);
+    Ok(())
 }
 
 /// Adds a project, switched on: its folder, or a devshare.toml of any name.
@@ -245,6 +249,20 @@ fn remove_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<(), Str
         .map_err(|error| format!("{error:#}"))
 }
 
+/// How this project is started and stopped on this computer, whatever its
+/// devshare.toml and the defaults say. Empty: back to those.
+#[tauri::command]
+fn set_commands<R: Runtime>(
+    app: AppHandle<R>,
+    path: String,
+    up: Option<String>,
+    down: Option<String>,
+) -> Result<(), String> {
+    projects(&app)?
+        .set_local_commands(&PathBuf::from(path), discover::Commands { up, down })
+        .map_err(|error| format!("{error:#}"))
+}
+
 /// Puts a project back on the list, even one with nothing to share.
 #[tauri::command]
 fn restore_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<(), String> {
@@ -314,15 +332,30 @@ fn answers(folder: &std::path::Path, options: &discover::Options) -> bool {
 /// Starts or stops a project its own way: `make up` / `make down` when its
 /// Makefile has them, else Docker Compose, else what its devshare.toml says.
 #[tauri::command]
-async fn run_project(path: String, action: String) -> Result<(), String> {
-    let folder = folder_of(&PathBuf::from(path));
-    let commands = discover::Commands::of(&folder);
+async fn run_project<R: Runtime>(
+    app: AppHandle<R>,
+    path: String,
+    action: String,
+) -> Result<(), String> {
+    let path = PathBuf::from(path);
+    let folder = folder_of(&path);
+    let defaults = Settings::load().unwrap_or_default();
+    let commands = discover::Commands::resolve(
+        &folder,
+        &projects(&app)?.local_commands(&path),
+        &discover::Commands {
+            up: defaults.up,
+            down: defaults.down,
+        },
+    );
     let command = match action.as_str() {
         "up" => commands.up,
         "down" => commands.down,
         other => return Err(format!("no such action: {other}")),
     }
-    .ok_or("DevShare does not know how to start this project: start it as you usually do, or set up = \"…\" in its devshare.toml")?;
+    .ok_or(
+        "DevShare does not know how to start this project: give it a start command in its details",
+    )?;
     crate::system::run_in(&folder, &command).await
 }
 /// The general settings as they are written, and the defaults that apply
@@ -335,9 +368,16 @@ struct SettingsView {
     domain: Option<String>,
     relay: Option<String>,
     join: Option<String>,
-    /// Where projects are looked for, one folder after another.
+    /// Where projects are looked for, one folder after another. Left as it
+    /// is when not sent: the sidebar's list edits it.
     #[serde(default)]
     folders: Option<Vec<String>>,
+    /// How projects are started and stopped when they say nothing of their
+    /// own.
+    #[serde(default)]
+    up: Option<String>,
+    #[serde(default)]
+    down: Option<String>,
 }
 
 #[tauri::command]
@@ -351,6 +391,8 @@ fn settings() -> Result<SettingsView, String> {
         relay: settings.relay,
         join: settings.join,
         folders: settings.folders,
+        up: settings.up,
+        down: settings.down,
     })
 }
 
@@ -363,6 +405,18 @@ fn save_settings(values: SettingsView) -> Result<(), String> {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
     };
+    let current = Settings::load().unwrap_or_default();
+    let folders = match values.folders {
+        Some(folders) => Some(
+            folders
+                .into_iter()
+                .map(|folder| folder.trim().to_string())
+                .filter(|folder| !folder.is_empty())
+                .collect::<Vec<_>>(),
+        )
+        .filter(|folders| !folders.is_empty()),
+        None => current.folders,
+    };
     Settings {
         server: filled(values.server),
         duration: filled(values.duration),
@@ -370,16 +424,9 @@ fn save_settings(values: SettingsView) -> Result<(), String> {
         domain: filled(values.domain),
         relay: filled(values.relay),
         join: filled(values.join),
-        folders: values
-            .folders
-            .map(|folders| {
-                folders
-                    .into_iter()
-                    .map(|folder| folder.trim().to_string())
-                    .filter(|folder| !folder.is_empty())
-                    .collect::<Vec<_>>()
-            })
-            .filter(|folders| !folders.is_empty()),
+        folders,
+        up: filled(values.up),
+        down: filled(values.down),
     }
     .save()
     .map_err(|error| format!("{error:#}"))
@@ -467,19 +514,28 @@ async fn authority(action: String) -> Result<(), String> {
 #[tauri::command]
 async fn share<R: Runtime>(
     app: AppHandle<R>,
-    sharing: State<'_, Sharing>,
     paths: Vec<String>,
     minutes: u64,
     guests: u32,
 ) -> Result<(), String> {
-    if sharing.current().is_some() {
+    start_sharing(&app, paths, minutes, guests).await
+}
+
+/// Shares these projects: from the window's Share button, or the menu bar's.
+pub(crate) async fn start_sharing<R: Runtime>(
+    app: &AppHandle<R>,
+    paths: Vec<String>,
+    minutes: u64,
+    guests: u32,
+) -> Result<(), String> {
+    if app.state::<Sharing>().current().is_some() {
         return Err("a session is already in progress".into());
     }
     if paths.is_empty() {
         return Err("switch on at least one project".into());
     }
     let folders: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
-    let projects = projects(&app)?;
+    let projects = projects(app)?;
     let config = tauri::async_runtime::spawn_blocking(move || {
         projects.config(&folders, &discovery_options())
     })
@@ -517,13 +573,27 @@ async fn share<R: Runtime>(
         Update::Ended(reason) => {
             window.state::<Sharing>().0.lock().unwrap().take();
             window.emit("ended", reason).ok();
+            crate::native::refresh(&window);
         }
     })
     .await
     .map_err(|error| format!("{error:#}"))?;
 
-    *sharing.0.lock().unwrap() = Some(session);
+    *app.state::<Sharing>().0.lock().unwrap() = Some(session);
+    crate::native::refresh(app);
     Ok(())
+}
+
+/// The usual duration (0: no time limit) and number of guests.
+pub(crate) fn usual() -> (u64, u32) {
+    let settings = Settings::load().unwrap_or_default();
+    let lifetime = settings.duration().unwrap_or(environment::DEFAULT_DURATION);
+    let minutes = if devshare_core::protocol::unlimited(lifetime.as_secs()) {
+        0
+    } else {
+        lifetime.as_secs().div_ceil(60)
+    };
+    (minutes, settings.guests())
 }
 
 /// Joins a session with its invitation. The window is told about it through
@@ -629,6 +699,7 @@ pub fn create<R: Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
             remove_source,
             remove_project,
             restore_project,
+            set_commands,
             share,
             disconnect,
             invite,
@@ -667,6 +738,12 @@ pub fn hand_over<R: Runtime>(app: &AppHandle<R>, links: Vec<url::Url>) {
 /// Quitting the app ends the session: guests are told before the process
 /// goes, not left to notice a dead link. A joined session is left.
 pub fn on_event<R: Runtime>(app: &AppHandle<R>, event: RunEvent) {
+    // The Dock icon brings back a window that was closed.
+    #[cfg(target_os = "macos")]
+    if let RunEvent::Reopen { .. } = event {
+        crate::native::show(app);
+        return;
+    }
     if let RunEvent::Exit = event {
         if let Some(session) = app.state::<Sharing>().current() {
             tauri::async_runtime::block_on(session.stop());

@@ -83,7 +83,7 @@ async function refreshProjects() {
   refreshRunning();
 }
 
-// The folders projects are looked for in, each removable.
+// The folders projects are looked for in, in the sidebar, each removable.
 function showSources(folders) {
   $('sources').replaceChildren(...folders.map((folder) => {
     const remove = element('button', { type: 'button', className: 'chip-remove', textContent: '×', title: `Stop looking in ${home(folder)}` });
@@ -91,9 +91,9 @@ function showSources(folders) {
       await invoke('remove_source', { path: folder }).catch((error) => { $('error').textContent = String(error); });
       refreshProjects();
     });
-    return element('span', { className: 'chip' }, [home(folder), remove]);
+    return element('li', {}, [element('span', { textContent: home(folder), title: folder }), remove]);
   }));
-  if (folders.length === 0) $('sources').textContent = 'no folder';
+  if (folders.length === 0) $('sources').append(element('li', { className: 'muted', textContent: 'No folder: projects are only the ones added.' }));
 }
 
 $('add-source').addEventListener('click', async () => {
@@ -159,6 +159,29 @@ function projectRow(project) {
   const stop = element('button', { type: 'button', className: 'small', textContent: 'Stop', hidden: true });
   stop.addEventListener('click', () => runProject(project, 'down', stop, state));
   details.append(stop);
+
+  // How this project starts and stops on this computer, over what its
+  // devshare.toml and the defaults say.
+  const upField = element('input', { type: 'text', value: project.local_up ?? '', placeholder: project.usual_up ?? 'nothing known: say how', spellcheck: false });
+  const downField = element('input', { type: 'text', value: project.local_down ?? '', placeholder: project.usual_down ?? 'nothing known: say how', spellcheck: false });
+  const keep = element('button', { type: 'button', className: 'small', textContent: 'Save' });
+  const kept = element('span', { className: 'muted' });
+  keep.addEventListener('click', async () => {
+    try {
+      await invoke('set_commands', { path: project.folder, up: upField.value.trim() || null, down: downField.value.trim() || null });
+      kept.textContent = 'Saved.';
+      project.local_up = upField.value.trim() || null;
+      project.startable = Boolean(project.local_up || project.usual_up);
+      row.running(row.isRunning);
+    } catch (error) {
+      kept.textContent = String(error);
+    }
+  });
+  details.append(element('div', { className: 'commands' }, [
+    element('label', {}, ['Start with', upField]),
+    element('label', {}, ['Stop with', downField]),
+    element('span', { className: 'commands-actions' }, [keep, kept]),
+  ]));
   // Any project can go, found or added, until it is put back.
   const remove = element('button', { type: 'button', className: 'small', textContent: 'Take off the list' });
   remove.addEventListener('click', async () => {
@@ -326,24 +349,30 @@ for (const action of ['install', 'renew', 'remove']) {
   $(`authority-${action}`).addEventListener('click', (event) => act(event.currentTarget, 'authority', { action }));
 }
 
-// This computer and the settings, in a sidebar.
+// The sidebar: open unless closed, remembered on this computer; toggled
+// from its button, View > Show or Hide Sidebar (⌃⌘S), opened by
+// DevShare > Settings… (⌘,).
+if (/Mac/.test(navigator.platform)) document.documentElement.classList.add('mac');
+
+function remembered() {
+  try { return localStorage.getItem('sidebar') !== 'closed'; } catch (error) { return true; }
+}
+
 function sidebar(open) {
-  $('sidebar').hidden = !open;
-  $('scrim').hidden = !open;
+  document.body.classList.toggle('no-sidebar', !open);
+  try { localStorage.setItem('sidebar', open ? 'open' : 'closed'); } catch (error) { /* not kept */ }
   if (open) {
     refreshComputer();
     loadSettings();
   }
 }
-$('open-sidebar').addEventListener('click', () => sidebar(true));
-$('close-sidebar').addEventListener('click', () => sidebar(false));
-$('scrim').addEventListener('click', () => sidebar(false));
-document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && !$('sidebar').hidden) sidebar(false);
-});
+
+$('toggle-sidebar').addEventListener('click', () => sidebar(document.body.classList.contains('no-sidebar')));
+listen('sidebar', (event) => sidebar(event.payload === 'open' || document.body.classList.contains('no-sidebar')));
+sidebar(remembered());
 
 // The general settings, edited in place.
-const SETTINGS = ['duration', 'guests', 'domain', 'folders', 'relay', 'server', 'join'];
+const SETTINGS = ['duration', 'guests', 'domain', 'up', 'down', 'relay', 'server', 'join'];
 
 async function loadSettings() {
   try {
@@ -362,7 +391,6 @@ $('settings').addEventListener('submit', async (event) => {
   const form = $('settings').elements;
   const values = Object.fromEntries(SETTINGS.map((name) => [name, form[name].value.trim() || null]));
   values.guests = values.guests ? Number(values.guests) : null;
-  values.folders = values.folders ? values.folders.split(',').map((folder) => folder.trim()).filter(Boolean) : null;
   $('settings-said').className = 'muted';
   try {
     await invoke('save_settings', { values });
@@ -610,6 +638,10 @@ listen('left', (event) => {
   setup(event.payload);
 });
 listen('invitation', (event) => handed(event.payload));
+
+// Changes made from the menu bar icon.
+listen('projects', () => { if (!$('setup').hidden) refreshProjects(); });
+listen('trouble', (event) => { $('error').textContent = String(event.payload); });
 
 listen('session', (event) => render(event.payload));
 listen('ended', (event) => {

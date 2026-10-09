@@ -61,6 +61,14 @@ pub struct Settings {
     /// the home folder (`~/Sites`, `~/Projects`…) when it is not set.
     #[serde(default)]
     pub folders: Option<Vec<String>>,
+    /// How the desktop app starts a project that says nothing of its own:
+    /// `make up` when its Makefile has it, else `docker compose up -d`, when
+    /// this is not set.
+    #[serde(default)]
+    pub up: Option<String>,
+    /// How it stops one, likewise.
+    #[serde(default)]
+    pub down: Option<String>,
 }
 
 /// Removes `key` from a settings file. The comments written above it are
@@ -134,6 +142,12 @@ impl Settings {
 # Where the desktop app looks for projects. The usual folders under your
 # home folder (~/Sites, ~/Projects…) when this is not set.
 # folders = [\"~/Sites\"]
+
+# How the desktop app starts and stops a project that says nothing of its
+# own: make up / make down when its Makefile has them, else Docker Compose,
+# when these are not set.
+# up = \"make up\"
+# down = \"make down\"
 ";
 
     /// `DEVSHARE_SETTINGS` when it is set, else the configuration folder.
@@ -160,7 +174,7 @@ impl Settings {
         let settings: Self = toml::from_str(&content).with_context(|| {
             format!(
                 "{} holds general settings only (server, duration, guests, domain, relay, join, \
-                 folders); \
+                 folders, up, down); \
                  the environments of a project belong in its own folder",
                 path.display()
             )
@@ -205,6 +219,8 @@ impl Settings {
             ("domain", text(&self.domain)),
             ("relay", text(&self.relay)),
             ("join", text(&self.join)),
+            ("up", text(&self.up)),
+            ("down", text(&self.down)),
             (
                 "folders",
                 self.folders.as_ref().map(|folders| {

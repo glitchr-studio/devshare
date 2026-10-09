@@ -24,19 +24,32 @@ fn main() {
             }
         },
     ));
-    let builder = builder.plugin(tauri_plugin_deep_link::init()).setup(|app| {
-        use tauri_plugin_deep_link::DeepLinkExt;
-        // Registered at each start where the system allows it: an app
-        // run from its build folder has no installer to do it.
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
-        app.deep_link().register_all().ok();
-        let handle = app.handle().clone();
-        app.deep_link()
-            .on_open_url(move |event| commands::hand_over(&handle, event.urls()));
-        if let Ok(Some(links)) = app.deep_link().get_current() {
-            commands::hand_over(app.handle(), links);
+    let builder = builder
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            use tauri_plugin_deep_link::DeepLinkExt;
+            devshare_app::native::menu(app)?;
+            devshare_app::native::tray(app)?;
+            // Registered at each start where the system allows it: an app
+            // run from its build folder has no installer to do it.
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            app.deep_link().register_all().ok();
+            let handle = app.handle().clone();
+            app.deep_link()
+                .on_open_url(move |event| commands::hand_over(&handle, event.urls()));
+            if let Ok(Some(links)) = app.deep_link().get_current() {
+                commands::hand_over(app.handle(), links);
+            }
+            Ok(())
+        });
+    // Closing the window hides it: the menu bar icon keeps the app at hand,
+    // and Quit (⌘Q) ends it.
+    let builder = builder.on_window_event(|window, event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            window.hide().ok();
+            api.prevent_close();
         }
-        Ok(())
     });
     commands::create(builder).run(commands::on_event);
 }

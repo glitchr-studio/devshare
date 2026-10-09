@@ -3,6 +3,7 @@
 
 pub mod commands;
 pub mod joined;
+pub mod native;
 pub mod projects;
 pub mod session;
 pub mod system;

@@ -7,132 +7,19 @@
   <link rel="stylesheet" href="app.css">
 </head>
 <body>
-  <main id="setup" hidden>
-    <header class="bar">
-      <h1>DevShare</h1>
-      <button id="open-sidebar" type="button" title="This computer and settings">⚙ Settings</button>
-    </header>
+  <!-- Beside the window's own buttons, as in the system's apps. -->
+  <button id="toggle-sidebar" class="sidebar-toggle" type="button" title="Show or hide the sidebar (⌃⌘S)" aria-label="Sidebar">
+    <svg viewBox="0 0 18 14" width="18" height="14" aria-hidden="true"><rect x="0.75" y="0.75" width="16.5" height="12.5" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="6.5" y1="1" x2="6.5" y2="13" stroke="currentColor" stroke-width="1.5"/></svg>
+  </button>
 
-    <p id="ended" class="notice" hidden></p>
-
-    <section class="projects">
-      <h2>Projects</h2>
-      <div class="sources">
-        <span class="muted">Looking in</span>
-        <span id="sources"></span>
-        <button id="add-source" type="button" class="small">Add a source…</button>
-      </div>
-      <ul id="projects" class="projects-list"></ul>
-      <p id="none" class="muted" hidden>No project found there. Add a source, a project's folder or its devshare.toml: DevShare reads the ports a project publishes from its Docker Compose file, its Vite or its Symfony configuration.</p>
-      <p class="adding">
-        <button id="add" type="button">Add a project…</button>
-        <button id="add-file" type="button">Add a devshare.toml…</button>
-        <span id="added" class="muted"></span>
-        <button id="show-hidden" type="button" class="link" hidden></button>
-      </p>
-      <ul id="hidden" class="hidden-list" hidden></ul>
-
-      <form id="choose" class="options">
-        <label>For
-          <select id="minutes">
-            <option value="5">5 minutes</option>
-            <option value="15">15 minutes</option>
-            <option value="30">30 minutes</option>
-            <option value="60">1 hour</option>
-            <option value="240">4 hours</option>
-            <option value="0">No time limit</option>
-          </select>
-        </label>
-        <label>up to
-          <input id="limit" type="number" min="1" max="50" value="3">
-          guests
-        </label>
-        <button id="share" type="submit" class="primary">Share</button>
-      </form>
-      <p id="error" class="error" role="alert"></p>
-    </section>
-
-    <section class="join">
-      <h2>Join a session</h2>
-      <form id="join-form">
-        <input id="join-invitation" type="text" placeholder="Paste an invitation: its link or its code" spellcheck="false" autocomplete="off">
-        <button id="join" type="submit">Join</button>
-      </form>
-      <p id="handed" class="muted" hidden>A link handed this invitation over. Join only if you know who sent it: while you are in the session, this computer's traffic to its names goes to its host.</p>
-      <p id="join-error" class="error" role="alert"></p>
-    </section>
-
-  </main>
-
-  <main id="session" hidden>
-    <header class="bar">
-      <h1>Sharing <span id="shared-names"></span></h1>
-      <span class="countdown" id="remaining"></span>
-      <button id="stop" type="button">Stop sharing</button>
-    </header>
-
-    <div class="columns">
-      <div class="column">
-        <section>
-          <h2>Invitation</h2>
-          <div id="invitation" class="invitation">
-            <div id="qr" class="qr"></div>
-            <div>
-              <p id="code" class="code"></p>
-              <p class="actions">
-                <button id="copy-link" type="button">Copy link</button>
-                <button id="copy-code" type="button">Copy code</button>
-              </p>
-            </div>
-          </div>
-          <p id="reach" class="muted reach"></p>
-          <div id="withdrawn" hidden>
-            <p>Too many wrong codes were tried, so the invitation was withdrawn. Nobody else can join until you issue a new one.</p>
-            <button id="invite" type="button" class="primary">New invitation</button>
-          </div>
-        </section>
-
-        <section>
-          <h2>Shared</h2>
-          <div id="shared"></div>
-        </section>
-      </div>
-
-      <div class="column">
-        <section>
-          <h2>Connected <span id="count" class="muted"></span></h2>
-          <p id="nobody" class="muted">Nobody has joined yet.</p>
-          <ul id="connected" class="guests"></ul>
-        </section>
-
-        <section>
-          <h2>Activity</h2>
-          <ul id="notices" class="notices"></ul>
-        </section>
-      </div>
-    </div>
-  </main>
-
-  <main id="joined" hidden>
-    <header class="bar">
-      <h1>Joined <span id="joined-names"></span></h1>
-      <span class="countdown" id="joined-remaining"></span>
-      <button id="leave" type="button">Leave</button>
-    </header>
-
-    <div class="joined">
-      <p id="joined-route" class="muted"></p>
-      <div id="joined-environments"></div>
-      <p class="muted">These names work in every program of this computer for as long as the session lasts, and go with it. Your own projects keep their addresses.</p>
-    </div>
-  </main>
-
-  <aside id="sidebar" class="sidebar" hidden>
-    <header class="bar">
-      <h1>Settings</h1>
-      <button id="close-sidebar" type="button" class="disclose" title="Close">×</button>
-    </header>
+  <aside id="sidebar" class="sidebar">
+    <div class="sidebar-top" data-tauri-drag-region></div>
     <div class="sidebar-body">
+      <section class="sources-section">
+        <h2>Looking in</h2>
+        <ul id="sources" class="sources"></ul>
+        <button id="add-source" type="button" class="small">Add a source…</button>
+      </section>
 
       <section class="computer">
         <h2>This computer</h2>
@@ -159,17 +46,133 @@
           <label>Usual duration <input name="duration" type="text" placeholder="5m, 2h, or none" spellcheck="false"></label>
           <label>Usual number of guests <input name="guests" type="number" min="1" max="50" placeholder="3"></label>
           <label>Domain of new projects <input name="domain" type="text" placeholder="test" spellcheck="false"></label>
-          <label>Look for projects in <input name="folders" type="text" placeholder="~/Sites, ~/Projects…" spellcheck="false"></label>
+          <label>Start projects with <input name="up" type="text" placeholder="make up, else docker compose up -d" spellcheck="false"></label>
+          <label>Stop projects with <input name="down" type="text" placeholder="make down, else docker compose down" spellcheck="false"></label>
           <label>Relay <input name="relay" type="text" placeholder="iroh's public relays" spellcheck="false"></label>
           <label>Control plane <input name="server" type="text" placeholder="http://localhost:8787" spellcheck="false"></label>
           <label>Invitation page <input name="join" type="text" placeholder="https://join.glitchr.dev" spellcheck="false"></label>
           <p class="settings-actions"><button type="submit">Save</button> <span id="settings-said" class="muted"></span></p>
         </form>
-        <p class="muted">Common to all your projects. An empty field means the default. A project's own environments are in its folder, in <code>devshare.toml</code>.</p>
+        <p class="muted">Common to all your projects. An empty field means the default. A project's own start and stop commands are in its details.</p>
       </section>
     </div>
   </aside>
-  <div id="scrim" class="scrim" hidden></div>
+
+  <div class="content">
+    <main id="setup" hidden>
+      <header class="bar" data-tauri-drag-region>
+        <h1>DevShare</h1>
+      </header>
+
+      <p id="ended" class="notice" hidden></p>
+
+      <section class="projects">
+        <h2>Projects</h2>
+        <ul id="projects" class="projects-list"></ul>
+        <p id="none" class="muted" hidden>No project found there. Add a source, a project's folder or its devshare.toml: DevShare reads the ports a project publishes from its Docker Compose file, its Vite or its Symfony configuration.</p>
+        <p class="adding">
+          <button id="add" type="button">Add a project…</button>
+          <button id="add-file" type="button">Add a devshare.toml…</button>
+          <span id="added" class="muted"></span>
+          <button id="show-hidden" type="button" class="link" hidden></button>
+        </p>
+        <ul id="hidden" class="hidden-list" hidden></ul>
+
+        <form id="choose" class="options">
+          <label>For
+            <select id="minutes">
+              <option value="5">5 minutes</option>
+              <option value="15">15 minutes</option>
+              <option value="30">30 minutes</option>
+              <option value="60">1 hour</option>
+              <option value="240">4 hours</option>
+              <option value="0">No time limit</option>
+            </select>
+          </label>
+          <label>up to
+            <input id="limit" type="number" min="1" max="50" value="3">
+            guests
+          </label>
+          <button id="share" type="submit" class="primary">Share</button>
+        </form>
+        <p id="error" class="error" role="alert"></p>
+      </section>
+
+      <section class="join">
+        <h2>Join a session</h2>
+        <form id="join-form">
+          <input id="join-invitation" type="text" placeholder="Paste an invitation: its link or its code" spellcheck="false" autocomplete="off">
+          <button id="join" type="submit">Join</button>
+        </form>
+        <p id="handed" class="muted" hidden>A link handed this invitation over. Join only if you know who sent it: while you are in the session, this computer's traffic to its names goes to its host.</p>
+        <p id="join-error" class="error" role="alert"></p>
+      </section>
+
+    </main>
+
+    <main id="session" hidden>
+      <header class="bar" data-tauri-drag-region>
+        <h1>Sharing <span id="shared-names"></span></h1>
+        <span class="countdown" id="remaining"></span>
+        <button id="stop" type="button">Stop sharing</button>
+      </header>
+
+      <div class="columns">
+        <div class="column">
+          <section>
+            <h2>Invitation</h2>
+            <div id="invitation" class="invitation">
+              <div id="qr" class="qr"></div>
+              <div>
+                <p id="code" class="code"></p>
+                <p class="actions">
+                  <button id="copy-link" type="button">Copy link</button>
+                  <button id="copy-code" type="button">Copy code</button>
+                </p>
+              </div>
+            </div>
+            <p id="reach" class="muted reach"></p>
+            <div id="withdrawn" hidden>
+              <p>Too many wrong codes were tried, so the invitation was withdrawn. Nobody else can join until you issue a new one.</p>
+              <button id="invite" type="button" class="primary">New invitation</button>
+            </div>
+          </section>
+
+          <section>
+            <h2>Shared</h2>
+            <div id="shared"></div>
+          </section>
+        </div>
+
+        <div class="column">
+          <section>
+            <h2>Connected <span id="count" class="muted"></span></h2>
+            <p id="nobody" class="muted">Nobody has joined yet.</p>
+            <ul id="connected" class="guests"></ul>
+          </section>
+
+          <section>
+            <h2>Activity</h2>
+            <ul id="notices" class="notices"></ul>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <main id="joined" hidden>
+      <header class="bar" data-tauri-drag-region>
+        <h1>Joined <span id="joined-names"></span></h1>
+        <span class="countdown" id="joined-remaining"></span>
+        <button id="leave" type="button">Leave</button>
+      </header>
+
+      <div class="joined">
+        <p id="joined-route" class="muted"></p>
+        <div id="joined-environments"></div>
+        <p class="muted">These names work in every program of this computer for as long as the session lasts, and go with it. Your own projects keep their addresses.</p>
+      </div>
+    </main>
+  </div>
 
   <script src="app.js"></script>
 </body>

@@ -952,15 +952,47 @@ pub struct Commands {
 
 impl Commands {
     /// What `devshare.toml` says (`up = "…"`, `down = "…"`), else the
-    /// project's Makefile when it has `up` and `down` targets (`make up`
-    /// reads the project's `.env` files and picks its environment itself),
-    /// else `docker compose up -d` and `docker compose down` when it has a
-    /// compose file. Nothing for a project started some other way.
+    /// project's Makefile when it has `up` and `down` targets, else Docker
+    /// Compose. See [`Commands::resolve`] for the whole order.
     pub fn of(folder: &Path) -> Self {
-        let written: Commands = std::fs::read_to_string(folder.join(FILE))
+        Self::resolve(folder, &Self::default(), &Self::default())
+    }
+
+    /// How a project is started and stopped, by the first that says: the
+    /// owner's own choice for it on this computer (`local`), its
+    /// `devshare.toml`, the owner's defaults for every project
+    /// (`defaults`), then what the project is: `make up` / `make down` when
+    /// its Makefile has those targets (they read the project's `.env` files
+    /// and pick its environment themselves), else `docker compose up -d` /
+    /// `docker compose down` when it has a compose file. Nothing for a
+    /// project started some other way.
+    pub fn resolve(folder: &Path, local: &Commands, defaults: &Commands) -> Self {
+        let written = Self::written(folder);
+        let automatic = Self::automatic(folder);
+        let pick = |local: &Option<String>,
+                    written: Option<String>,
+                    default: &Option<String>,
+                    automatic: Option<String>| {
+            let given =
+                |value: &Option<String>| value.clone().filter(|value| !value.trim().is_empty());
+            given(local).or(written).or(given(default)).or(automatic)
+        };
+        Self {
+            up: pick(&local.up, written.up, &defaults.up, automatic.up),
+            down: pick(&local.down, written.down, &defaults.down, automatic.down),
+        }
+    }
+
+    /// What the project's `devshare.toml` says.
+    pub fn written(folder: &Path) -> Self {
+        std::fs::read_to_string(folder.join(FILE))
             .ok()
             .and_then(|text| toml::from_str(&text).ok())
-            .unwrap_or_default();
+            .unwrap_or_default()
+    }
+
+    /// What the project is started with when nobody says otherwise.
+    pub fn automatic(folder: &Path) -> Self {
         let makefile = ["Makefile", "makefile", "GNUmakefile"]
             .iter()
             .find_map(|name| std::fs::read_to_string(folder.join(name)).ok())
@@ -982,12 +1014,8 @@ impl Commands {
             }
         };
         Self {
-            up: written
-                .up
-                .or_else(|| fallback("up", "docker compose up -d")),
-            down: written
-                .down
-                .or_else(|| fallback("down", "docker compose down")),
+            up: fallback("up", "docker compose up -d"),
+            down: fallback("down", "docker compose down"),
         }
     }
 }

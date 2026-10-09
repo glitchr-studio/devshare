@@ -289,5 +289,70 @@ fn the_window_finds_projects_edits_the_settings_and_starts_nothing_it_cannot() {
     let computer = ask(&window, "computer", json!({})).unwrap();
     assert!(computer["helper"].is_string(), "{computer}");
 
+    // How a project starts: the owner's own command for it, else the
+    // defaults of the settings, else what it is.
+    let shop_path = shop.canonicalize().unwrap().display().to_string();
+    let values = json!({ "values": { "folders": ["~/Sites"], "up": "make start" } });
+    ask(&window, "save_settings", values).unwrap();
+    let find = |overview: &Value, name: &str| -> Value {
+        overview["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|project| project["name"] == name)
+            .cloned()
+            .unwrap()
+    };
+    let overview = ask(&window, "overview", json!({})).unwrap();
+    assert_eq!(
+        find(&overview, "shop")["usual_up"],
+        "make start",
+        "{overview}"
+    );
+    assert_eq!(
+        find(&overview, "shop")["usual_down"],
+        "docker compose down",
+        "no default to stop: Compose"
+    );
+    ask(
+        &window,
+        "set_commands",
+        json!({ "path": shop_path, "up": "echo mine > mine", "down": null }),
+    )
+    .unwrap();
+    let overview = ask(&window, "overview", json!({})).unwrap();
+    assert_eq!(find(&overview, "shop")["local_up"], "echo mine > mine");
+    ask(
+        &window,
+        "run_project",
+        json!({ "path": shop_path, "action": "up" }),
+    )
+    .unwrap();
+    assert!(
+        shop.join("mine").is_file(),
+        "the owner's own command ran in the project's folder"
+    );
+    // Emptied: the usual one again.
+    ask(
+        &window,
+        "set_commands",
+        json!({ "path": shop_path, "up": "  ", "down": null }),
+    )
+    .unwrap();
+    assert_eq!(
+        find(&ask(&window, "overview", json!({})).unwrap(), "shop")["local_up"],
+        Value::Null
+    );
+    // Saving the settings without the folders leaves them as they are.
+    ask(
+        &window,
+        "save_settings",
+        json!({ "values": { "guests": 2 } }),
+    )
+    .unwrap();
+    assert!(std::fs::read_to_string(&settings)
+        .unwrap()
+        .contains("folders = [\"~/Sites\"]"));
+
     std::fs::remove_dir_all(&home).ok();
 }
