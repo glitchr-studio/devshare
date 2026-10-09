@@ -1,6 +1,14 @@
 import SwiftUI
 
 struct SessionView: View {
+    /// What a launch's kind is called for the person: the provider's app.
+    static func title(of launch: Launch) -> String {
+        switch launch.kind {
+        case "expo": return "Open in Expo Go"
+        default: return "Open with \(launch.kind)"
+        }
+    }
+
     @Environment(SessionModel.self) private var model
     let session: GuestSession
     @State private var leaving = false
@@ -21,7 +29,14 @@ struct SessionView: View {
                             }
                         }
                         ForEach(environment.services, id: \.address) { service in
-                            if let url = URL(string: service.url) {
+                            if service.kind != nil {
+                                // Not the web: for another app than the browser.
+                                HStack {
+                                    Text(service.address).font(.body.monospaced())
+                                    Spacer()
+                                    Text(service.kind ?? "").font(.caption2).foregroundStyle(.secondary)
+                                }
+                            } else if let url = URL(string: service.url) {
                                 NavigationLink(value: url) {
                                     HStack {
                                         Text(service.address).font(.body.monospaced())
@@ -31,6 +46,18 @@ struct SessionView: View {
                                         }
                                     }
                                 }
+                            }
+                        }
+                        // Ways to open it with another app. This app has no
+                        // provider yet: the other app would need the whole
+                        // phone in the session, which the tunnel extension
+                        // will give.
+                        ForEach(environment.launches, id: \.url) { launch in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Label(Self.title(of: launch), systemImage: "arrow.up.forward.app")
+                                    .foregroundStyle(.secondary)
+                                Text("\(launch.url) — needs DevShare's tunnel on this phone, not yet available")
+                                    .font(.caption2).foregroundStyle(.secondary)
                             }
                         }
                     }

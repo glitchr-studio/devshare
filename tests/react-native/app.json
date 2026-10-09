@@ -1,0 +1,10 @@
+{
+  "expo": {
+    "name": "DevShare demo",
+    "slug": "devshare-demo",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "platforms": ["ios", "android"],
+    "ios": { "bundleIdentifier": "studio.glitchr.devshare.demo" }
+  }
+}

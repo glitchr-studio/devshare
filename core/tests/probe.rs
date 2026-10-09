@@ -109,6 +109,7 @@ async fn guests_receive_the_fingerprint_the_host_saw() {
         host: host.into(),
         port,
         target: Some(target.to_string()),
+        kind: None,
     };
     let config = Config {
         server: None,
@@ -121,6 +122,7 @@ async fn guests_receive_the_fingerprint_the_host_saw() {
                     def("shop.test", 80, plain),
                     def("shop.test", 5173, closed),
                 ],
+                launch: Vec::new(),
             },
         )]),
     };

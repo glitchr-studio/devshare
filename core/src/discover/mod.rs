@@ -13,8 +13,8 @@
 //! A project behind a reverse proxy answers several names on the same
 //! ports: they are read from the proxy's configuration (see [`routes`]),
 //! and subdomains of them from `/etc/hosts`. A project with no compose file
-//! may still run servers on the machine: Vite's, the Symfony CLI's (see
-//! [`local`]).
+//! may still run servers on the machine: Vite's, Metro's (React Native),
+//! the Symfony CLI's (see [`local`]).
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -112,6 +112,8 @@ pub struct Published {
     pub udp: bool,
     /// Why it is not shared, when it is not.
     pub left_out: Option<String>,
+    /// What speaks on it when it is not a plain web server: `metro`.
+    pub kind: Option<String>,
 }
 
 impl Published {
@@ -151,6 +153,9 @@ pub struct Discovery {
     pub hostname: String,
     /// The names the project's proxies route, on their own ports.
     pub routes: Vec<Route>,
+    /// Ways to open the project with another program than a browser:
+    /// `(kind, url)`, such as `("expo", "exp://shop.test:8081")`.
+    pub launches: Vec<(String, String)>,
     /// The files that were read, by name.
     pub sources: Vec<String>,
     pub ports: Vec<Published>,
@@ -223,6 +228,7 @@ impl Discovery {
                     host,
                     port: port.host.unwrap_or_default(),
                     target: port.target(),
+                    kind: port.kind.clone(),
                 })
             })
             .collect();
@@ -233,6 +239,14 @@ impl Discovery {
                 EnvironmentDef {
                     entrypoint: self.entrypoint(),
                     services,
+                    launch: self
+                        .launches
+                        .iter()
+                        .map(|(kind, url)| crate::environment::LaunchDef {
+                            kind: kind.clone(),
+                            url: url.clone(),
+                        })
+                        .collect(),
                 },
             )]),
         }
@@ -273,8 +287,12 @@ impl Discovery {
                     self.names_for(port)
                         .iter()
                         .map(|name| {
+                            let kind = match &port.kind {
+                                Some(kind) => format!(", kind = {}", quoted(kind)),
+                                None => String::new(),
+                            };
                             format!(
-                                "{{ host = {}, port = {host}, target = {} }},",
+                                "{{ host = {}, port = {host}, target = {}{kind} }},",
                                 quoted(name),
                                 quoted(&target)
                             )
@@ -301,6 +319,18 @@ impl Discovery {
             }
         }
         file.push_str("]\n");
+        if !self.launches.is_empty() {
+            file.push_str("# How a guest opens it with another program than a browser.\n");
+            file.push_str("launch = [\n");
+            for (kind, url) in &self.launches {
+                file.push_str(&format!(
+                    "  {{ kind = {}, url = {} }},\n",
+                    quoted(kind),
+                    quoted(url)
+                ));
+            }
+            file.push_str("]\n");
+        }
         for note in &self.notes {
             file.push_str(&format!("\n# {note}\n"));
         }
@@ -387,6 +417,7 @@ pub fn discover(directory: &Path, options: &Options) -> Result<Discovery> {
         project,
         hostname,
         routes: Vec::new(),
+        launches: Vec::new(),
         sources,
         ports: Vec::new(),
         notes: Vec::new(),
@@ -430,18 +461,23 @@ pub fn discover(directory: &Path, options: &Options) -> Result<Discovery> {
     find_routes(directory, &services, options, &mut discovery);
     named_by_env(&variables, options, &mut discovery);
 
-    // Vite often runs on the machine next to the containers: its port is
-    // then published by none of them.
-    if let Some(vite) = local::vite(directory, &discovery.hostname) {
-        let port = vite.port.container;
+    // Vite and Metro often run on the machine next to the containers: their
+    // ports are then published by none of them.
+    let beside = [
+        local::vite(directory, &discovery.hostname),
+        local::metro(directory, &discovery.hostname),
+    ];
+    for local in beside.into_iter().flatten() {
+        let port = local.port.container;
         let published = discovery
             .ports
             .iter()
             .any(|known| known.container == port || known.host == Some(port));
         if !published {
-            discovery.sources.push(vite.source);
-            discovery.ports.push(vite.port);
-            discovery.notes.extend(vite.notes);
+            discovery.sources.push(local.source);
+            discovery.ports.push(local.port);
+            discovery.notes.extend(local.notes);
+            discovery.launches.extend(local.launches);
         }
     }
     Ok(discovery)
@@ -463,13 +499,17 @@ fn on_the_machine(
             options.domain.as_deref().unwrap_or(DEFAULT_DOMAIN)
         ),
     };
-    let found: Vec<local::Local> = [local::symfony(directory), local::vite(directory, &hostname)]
-        .into_iter()
-        .flatten()
-        .collect();
+    let found: Vec<local::Local> = [
+        local::symfony(directory),
+        local::vite(directory, &hostname),
+        local::metro(directory, &hostname),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     if found.is_empty() {
         bail!(
-            "no compose file in {}, nor a Vite or Symfony project",
+            "no compose file in {}, nor a Vite, React Native or Symfony project",
             directory.display()
         );
     }
@@ -477,6 +517,7 @@ fn on_the_machine(
         project,
         hostname,
         routes: Vec::new(),
+        launches: Vec::new(),
         sources: Vec::new(),
         ports: Vec::new(),
         notes: Vec::new(),
@@ -485,6 +526,7 @@ fn on_the_machine(
         sources.insert(0, local.source);
         discovery.ports.push(local.port);
         discovery.notes.extend(local.notes);
+        discovery.launches.extend(local.launches);
     }
     discovery.sources = sources;
     named_by_env(variables, options, &mut discovery);
@@ -653,6 +695,7 @@ fn find_routes(
                 address: None,
                 udp: false,
                 left_out: None,
+                kind: None,
             });
         }
         discovery.notes.push(format!(
@@ -878,6 +921,7 @@ fn scalar(value: &Value) -> Option<String> {
 pub fn is_project(directory: &Path) -> bool {
     has_compose_file(directory)
         || local::vite(directory, "").is_some()
+        || local::metro(directory, "").is_some()
         || local::symfony(directory).is_some()
 }
 
@@ -1167,6 +1211,7 @@ fn ports(service: &str, declared: &Value) -> Result<Vec<Published>> {
             address,
             udp,
             left_out: Some(format!("a range of {count} ports: list the ones to share")),
+            kind: None,
         }]);
     }
     Ok((0..count)
@@ -1177,6 +1222,7 @@ fn ports(service: &str, declared: &Value) -> Result<Vec<Published>> {
             address: address.clone(),
             udp,
             left_out: None,
+            kind: None,
         })
         .collect())
 }

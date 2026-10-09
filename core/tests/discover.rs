@@ -670,3 +670,76 @@ fn a_project_is_started_its_own_way() {
     std::fs::remove_dir_all(&folder).ok();
     std::fs::remove_dir_all(&bare).ok();
 }
+
+#[test]
+fn a_react_native_app_is_shared_through_its_metro_server_with_a_way_to_open_it() {
+    let demo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/react-native");
+    let found = discover(&demo, &Options::default()).unwrap();
+    assert_eq!(found.hostname, "react-native.test");
+    assert_eq!(shared(&found), ["react-native.test:8081"]);
+    assert_eq!(found.sources, ["package.json"]);
+    let config = found.config();
+    let environment = config.environments.values().next().unwrap();
+    assert_eq!(environment.services[0].kind.as_deref(), Some("metro"));
+    assert_eq!(
+        environment.services[0].target.as_deref(),
+        Some("localhost:8081")
+    );
+    assert_eq!(
+        (
+            environment.launch[0].kind.as_str(),
+            environment.launch[0].url.as_str()
+        ),
+        ("expo", "exp://react-native.test:8081")
+    );
+    assert!(
+        found.notes.iter().any(|note| note.contains("tunnel")),
+        "{:?}",
+        found.notes
+    );
+
+    // Written and read back: the kind and the launch travel to the session.
+    let toml = found.to_toml(None);
+    assert!(toml.contains("kind = \"metro\""), "{toml}");
+    assert!(
+        toml.contains(
+            "launch = [\n  { kind = \"expo\", url = \"exp://react-native.test:8081\" },\n]"
+        ),
+        "{toml}"
+    );
+    let folder = files("metro-written", &[("devshare.toml", &toml)]);
+    let read = Config::of(&folder).unwrap();
+    let selection = read.select(&[]).unwrap();
+    let sent = selection.environments.values().next().unwrap();
+    assert_eq!(sent.services[0].kind.as_deref(), Some("metro"));
+    assert_eq!(sent.launches[0].url, "exp://react-native.test:8081");
+    std::fs::remove_dir_all(&folder).ok();
+
+    // Beside containers too: a compose project with a React Native app.
+    let both = files(
+        "metro-beside",
+        &[
+            (
+                "compose.yaml",
+                "services:\n  api:\n    image: my/api\n    ports: [\"8080:8080\"]\n",
+            ),
+            (
+                "package.json",
+                r#"{"dependencies": {"react-native": "0.76.0"}}"#,
+            ),
+        ],
+    );
+    let found = discover(&both, &Options::default()).unwrap();
+    assert_eq!(
+        shared(&found),
+        [
+            format!("{}:8080", found.hostname),
+            format!("{}:8081", found.hostname)
+        ]
+    );
+    assert!(
+        found.launches.is_empty(),
+        "no Expo: nothing to open it with"
+    );
+    std::fs::remove_dir_all(&both).ok();
+}

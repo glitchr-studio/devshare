@@ -72,14 +72,17 @@ async fn the_owner_sees_logins_and_disconnects_one_guest() {
                         host: "shop.test".into(),
                         port: 80,
                         target: Some(service.local_addr().unwrap().to_string()),
+                        kind: None,
                     },
                     // Nothing listens there.
                     ServiceDef {
                         host: "shop.test".into(),
                         port: 5173,
                         target: Some("127.0.0.1:9".into()),
+                        kind: None,
                     },
                 ],
+                launch: Vec::new(),
             },
         )]),
     };

@@ -748,14 +748,26 @@ function renderJoined(view) {
         element('span', { textContent: environment.name }),
         ...(environment.entrypoint ? [opener(environment.entrypoint, 'Open')] : []),
       ]),
-      element('ul', {}, environment.services.map((service) =>
-        element('li', {}, [
-          element('span', { className: 'mono', textContent: service.address }),
-          ...(service.certified
-            ? [element('span', { className: 'tag certified', textContent: 'HTTPS, certified by this computer' })]
-            : service.sha256 ? [element('span', { className: 'tag', textContent: 'HTTPS' })] : []),
-          opener(service.url, 'Open'),
-        ]))),
+      element('ul', {}, [
+        ...environment.services.map((service) =>
+          element('li', {}, [
+            element('span', { className: 'mono', textContent: service.address }),
+            ...(service.kind
+              ? [element('span', { className: 'tag', textContent: service.kind })]
+              : service.certified
+                ? [element('span', { className: 'tag certified', textContent: 'HTTPS, certified by this computer' })]
+                : service.sha256 ? [element('span', { className: 'tag', textContent: 'HTTPS' })] : []),
+            // Not the web: shown, for the program that speaks it.
+            ...(service.kind ? [] : [opener(service.url, 'Open')]),
+          ])),
+        // Ways to open it with another program: this computer is in the
+        // session whole, so that program reaches it by the name.
+        ...environment.launches.map((launch) =>
+          element('li', {}, [
+            element('span', { className: 'mono', textContent: launch.url }),
+            element('span', { className: 'tag', textContent: `open with ${launch.kind}` }),
+          ])),
+      ]),
     ]));
   }
   joinedNow = true;

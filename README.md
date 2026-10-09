@@ -52,8 +52,17 @@ GNU General Public License, version 3 or later: see [LICENSE](LICENSE).
   `DEFAULT_URI`, `APP_URL`), else `<folder>.test`. Behind a
   reverse proxy, the names it answers come from its configuration: Traefik
   labels, a Caddyfile, nginx's `server_name`, and their subdomains in
-  `/etc/hosts`. Without a compose file, a Vite dev server and the Symfony
-  CLI's server are found from their own configuration.
+  `/etc/hosts`. Without a compose file, a Vite dev server, a React Native
+  app's Metro server and the Symfony CLI's server are found from their own
+  configuration.
+- **Providers.** A service carries a `kind` when it is not the web (`metro`
+  for a React Native dev server), and an environment can say how to open it
+  with another program than a browser (`launch = [{ kind = "expo", url =
+  "exp://app.test:8081" }]`). A guest app routes by kind and offers the
+  launches it has a provider for: the web in its browser today; a React
+  Native app through Expo Go or a dev client once the phone is in the
+  session whole, which is the tunnel extension's job. [tests/react-native](tests/react-native)
+  is the smallest such app.
 - **The invitation** is one link, also shown as a QR code. It carries the
   host's identity for the session and the relay it is reachable through.
 - **The link** between host and guest is made by iroh: both sides connect
@@ -285,7 +294,7 @@ ios/        the iPhone and iPad app (SwiftUI)
 docs/       the public invitation page, served at join.glitchr.dev
 deploy/     the public server: relay and control plane behind Caddy
 docker/     end-to-end harness: host, guest, control plane, relay
-tests/      showcase/: an example compose project
+tests/      showcase/: an example compose project; react-native/: an Expo app
 ```
 
 ## Tests

@@ -134,6 +134,7 @@ pub(crate) mod tests {
                 port: *port,
                 protocol: Transport::Tcp,
                 tls: None,
+                kind: None,
             })
             .collect();
         let dns = services
@@ -155,6 +156,7 @@ pub(crate) mod tests {
                     entrypoint: None,
                     dns,
                     services,
+                    launches: Vec::new(),
                 },
             )]),
         }

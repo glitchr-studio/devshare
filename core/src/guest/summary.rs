@@ -20,6 +20,15 @@ pub struct SummaryEnvironment {
     /// session's own addresses.
     pub entrypoint: Option<String>,
     pub services: Vec<SummaryService>,
+    /// Ways to open it with another program than a browser, for the
+    /// providers a guest app has.
+    pub launches: Vec<SummaryLaunch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SummaryLaunch {
+    pub kind: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -34,6 +43,8 @@ pub struct SummaryService {
     pub sha256: Option<String>,
     /// Certified by this device's own authority: opens without a warning.
     pub certified: bool,
+    /// What speaks on it when it is not the web: `metro`.
+    pub kind: Option<String>,
 }
 
 impl Summary {
@@ -57,6 +68,7 @@ impl Summary {
                             host,
                             port: service.port,
                             sha256,
+                            kind: service.kind.as_deref().map(|kind| clean(kind, 32)),
                         }
                     })
                     .collect();
@@ -76,10 +88,28 @@ impl Summary {
                             format!("{start}{}", parsed.path().trim_end_matches('/'))
                         })
                 });
+                // A launch names one of the session's own hosts, or is dropped.
+                let launches = environment
+                    .launches
+                    .iter()
+                    .filter(|launch| {
+                        url::Url::parse(&launch.url)
+                            .ok()
+                            .and_then(|parsed| {
+                                parsed.host_str().map(|host| host.to_ascii_lowercase())
+                            })
+                            .is_some_and(|host| services.iter().any(|service| service.host == host))
+                    })
+                    .map(|launch| SummaryLaunch {
+                        kind: clean(&launch.kind, 32),
+                        url: clean(&launch.url, 400),
+                    })
+                    .collect();
                 SummaryEnvironment {
                     name: clean(name, 64),
                     entrypoint,
                     services,
+                    launches,
                 }
             })
             .collect();
@@ -128,6 +158,7 @@ mod tests {
             tls: tls.then(|| Tls {
                 sha256: "ab".repeat(32),
             }),
+            kind: None,
         };
         Manifest {
             protocol: 2,
@@ -147,6 +178,7 @@ mod tests {
                         service("Shop.test", 443, true),
                         service("shop.test", 5173, false),
                     ],
+                    launches: Vec::new(),
                 },
             )]),
         }

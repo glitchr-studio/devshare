@@ -55,7 +55,9 @@ async fn a_phone_joins_and_its_browser_reaches_the_service_through_the_proxy() {
                     host: "shop.test".into(),
                     port: 80,
                     target: Some(shop.to_string()),
+                    kind: None,
                 }],
+                launch: Vec::new(),
             },
         )]),
     };

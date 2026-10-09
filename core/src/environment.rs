@@ -349,6 +349,8 @@ pub struct EnvironmentDef {
     #[serde(default)]
     pub entrypoint: Option<String>,
     pub services: Vec<ServiceDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub launch: Vec<LaunchDef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -359,6 +361,17 @@ pub struct ServiceDef {
     /// host machine resolves it.
     #[serde(default)]
     pub target: Option<String>,
+    /// What speaks on the port when it is not a plain web server: `metro`
+    /// for a React Native dev server.
+    #[serde(default)]
+    pub kind: Option<String>,
+}
+
+/// A way to open the environment with another program than a browser.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LaunchDef {
+    pub kind: String,
+    pub url: String,
 }
 
 /// The environments of one session: what guests see, and the only
@@ -438,6 +451,7 @@ impl Config {
                     port: service.port,
                     protocol: Transport::Tcp,
                     tls: None,
+                    kind: service.kind.clone(),
                 });
             }
             selection.environments.insert(
@@ -446,6 +460,14 @@ impl Config {
                     entrypoint: def.entrypoint.clone(),
                     dns,
                     services,
+                    launches: def
+                        .launch
+                        .iter()
+                        .map(|launch| crate::protocol::Launch {
+                            kind: launch.kind.clone(),
+                            url: launch.url.clone(),
+                        })
+                        .collect(),
                 },
             );
         }
@@ -462,6 +484,7 @@ mod tests {
             host: host.into(),
             port,
             target: target.map(Into::into),
+            kind: None,
         };
         Config {
             server: None,
@@ -474,6 +497,7 @@ mod tests {
                             def("Shop.test", 443, None),
                             def("api.shop.test", 8080, Some("127.0.0.1:9000")),
                         ],
+                        launch: Vec::new(),
                     },
                 ),
                 (
@@ -481,6 +505,7 @@ mod tests {
                     EnvironmentDef {
                         entrypoint: None,
                         services: vec![def("db.test", 5432, None)],
+                        launch: Vec::new(),
                     },
                 ),
             ]),

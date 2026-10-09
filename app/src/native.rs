@@ -108,8 +108,11 @@ pub fn tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                 toggle_panel(tray.app_handle(), rect);
             }
         });
-    if let Some(image) = app.default_window_icon() {
-        icon = icon.icon(image.clone()).icon_as_template(true);
+    // A template image of its own, the glyph filling the frame: the app's
+    // icon has margins that leave it small in the menu bar.
+    match tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png")) {
+        Ok(image) => icon = icon.icon(image).icon_as_template(true),
+        Err(error) => tracing::warn!("no menu bar icon: {error}"),
     }
     icon.build(app)?;
     Ok(())

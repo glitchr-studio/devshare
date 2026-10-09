@@ -57,6 +57,7 @@ async fn session(lifetime: Duration, max_guests: u32) -> Session {
         host: host.into(),
         port,
         target: Some(target.to_string()),
+        kind: None,
     };
     let config = Config {
         server: None,
@@ -66,6 +67,7 @@ async fn session(lifetime: Duration, max_guests: u32) -> Session {
                 EnvironmentDef {
                     entrypoint: Some("https://shop.test".into()),
                     services: vec![def("shop.test", 443, shop), def("api.shop.test", 8080, api)],
+                    launch: Vec::new(),
                 },
             ),
             (
@@ -73,6 +75,7 @@ async fn session(lifetime: Duration, max_guests: u32) -> Session {
                 EnvironmentDef {
                     entrypoint: None,
                     services: vec![def("db.test", 5432, private)],
+                    launch: Vec::new(),
                 },
             ),
         ]),
@@ -525,7 +528,9 @@ async fn with_a_public_invitation_page_the_link_points_there_and_still_says_ever
                     host: "shop.test".into(),
                     port: 443,
                     target: Some(shop.to_string()),
+                    kind: None,
                 }],
+                launch: Vec::new(),
             },
         )]),
     };

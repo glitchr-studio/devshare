@@ -65,7 +65,9 @@ async fn the_windows_qr_code_lets_a_guest_in_and_changes_with_the_invitation() {
                     host: "shop.test".into(),
                     port: 80,
                     target: Some(service.local_addr().unwrap().to_string()),
+                    kind: None,
                 }],
+                launch: Vec::new(),
             },
         )]),
     };

@@ -22,6 +22,8 @@ pub(super) struct Local {
     pub source: String,
     pub port: Published,
     pub notes: Vec<String>,
+    /// Ways to open it with another program than a browser: `(kind, url)`.
+    pub launches: Vec<(String, String)>,
 }
 
 /// Vite's dev server, when the project has a Vite configuration.
@@ -65,8 +67,10 @@ pub(super) fn vite(directory: &Path, hostname: &str) -> Option<Local> {
             address: Some("localhost".into()),
             udp: false,
             left_out: None,
+            kind: None,
         },
         notes,
+        launches: Vec::new(),
     })
 }
 
@@ -109,8 +113,58 @@ pub(super) fn symfony(directory: &Path) -> Option<Local> {
             address: None,
             udp: false,
             left_out: None,
+            kind: None,
         },
         notes,
+        launches: Vec::new(),
+    })
+}
+
+const METRO_PORT: u16 = 8081;
+
+/// Metro, the dev server of a React Native or Expo app: the phone loads the
+/// app's JavaScript from it. Found by the project's dependencies.
+pub(super) fn metro(directory: &Path, hostname: &str) -> Option<Local> {
+    let package = std::fs::read_to_string(directory.join("package.json")).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&package).ok()?;
+    let depends = |name: &str| {
+        ["dependencies", "devDependencies"].iter().any(|section| {
+            parsed
+                .get(section)
+                .and_then(|deps| deps.get(name))
+                .is_some()
+        })
+    };
+    if !depends("react-native") && !depends("expo") {
+        return None;
+    }
+    let scripts = parsed
+        .get("scripts")
+        .map(|scripts| scripts.to_string())
+        .unwrap_or_default();
+    let port = flag_port(&scripts).unwrap_or(METRO_PORT);
+    let expo = depends("expo");
+    let mut launches = Vec::new();
+    if expo && !hostname.is_empty() {
+        launches.push(("expo".to_string(), format!("exp://{hostname}:{port}")));
+    }
+    Some(Local {
+        source: "package.json".into(),
+        port: Published {
+            service: if expo { "expo".into() } else { "metro".into() },
+            container: port,
+            host: Some(port),
+            address: Some("localhost".into()),
+            udp: false,
+            left_out: None,
+            kind: Some("metro".into()),
+        },
+        notes: vec![format!(
+            "A phone runs the app with its React Native runtime (Expo Go, a dev client) \
+             reaching {hostname}:{port} through the session: it needs DevShare's system-wide \
+             tunnel on the phone, not only DevShare's own browser."
+        )],
+        launches,
     })
 }
 

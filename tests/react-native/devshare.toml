@@ -1,0 +1,15 @@
+# Written by `devshare discover` from package.json.
+# Run it again when the compose file changes. Remove this line to keep the
+# file as you edit it: discover will then leave it alone.
+
+[environments.react-native]
+services = [
+  # expo → 8081
+  { host = "react-native.test", port = 8081, target = "localhost:8081", kind = "metro" },
+]
+# How a guest opens it with another program than a browser.
+launch = [
+  { kind = "expo", url = "exp://react-native.test:8081" },
+]
+
+# A phone runs the app with its React Native runtime (Expo Go, a dev client) reaching react-native.test:8081 through the session: it needs DevShare's system-wide tunnel on the phone, not only DevShare's own browser.

@@ -73,6 +73,20 @@ pub struct Environment {
     pub entrypoint: Option<String>,
     pub dns: Vec<String>,
     pub services: Vec<Service>,
+    /// Ways to open the environment with something else than a browser: a
+    /// guest app offers the ones it has a provider for.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub launches: Vec<Launch>,
+}
+
+/// How a guest device opens an environment with another program than its
+/// browser: `expo` with `exp://shop.test:8081` hands a React Native app's
+/// Metro server to Expo Go. The kind names the provider; a guest app that
+/// has none for it shows the address and says so.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Launch {
+    pub kind: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -84,6 +98,11 @@ pub struct Service {
     /// Present when the service speaks TLS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls: Option<Tls>,
+    /// What speaks on the port when it is not a plain web server: `metro`
+    /// (a React Native dev server), and whatever providers come next. A
+    /// guest app routes the service by it; `None` is the web.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 /// What the host saw when it connected to the service itself.

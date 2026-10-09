@@ -103,6 +103,7 @@ mod tests {
                     entrypoint: None,
                     dns: names.iter().map(|name| name.to_string()).collect(),
                     services: Vec::new(),
+                    launches: Vec::new(),
                 },
             )]),
         }

@@ -53,6 +53,16 @@ pub struct SharedEnvironment {
     pub name: String,
     pub entrypoint: Option<String>,
     pub services: Vec<SharedService>,
+    /// Ways to open it with another app than the browser: the app offers
+    /// the kinds it has a provider for.
+    pub launches: Vec<Launch>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Launch {
+    /// `expo`: Expo Go, for a React Native app's Metro server.
+    pub kind: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -62,6 +72,8 @@ pub struct SharedService {
     /// What the browser opens: `https://shop.test`.
     pub url: String,
     pub tls: bool,
+    /// What speaks on it when it is not the web: `metro`.
+    pub kind: Option<String>,
 }
 
 /// A joined session. It lasts until the host ends it or
@@ -180,7 +192,16 @@ async fn start(link: &GuestLink) -> anyhow::Result<Started> {
                         address: service.address,
                         url: service.url,
                         tls: service.sha256.is_some(),
+                        kind: service.kind,
                     }
+                })
+                .collect(),
+            launches: environment
+                .launches
+                .into_iter()
+                .map(|launch| Launch {
+                    kind: launch.kind,
+                    url: launch.url,
                 })
                 .collect(),
         })
