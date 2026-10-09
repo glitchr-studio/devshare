@@ -519,7 +519,9 @@ async fn check(host: String, port: u16, target: String, named: bool) -> AddressC
         .danger_accept_invalid_certs(true)
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(4))
-        .resolve(&host, address)
+        // The address alone: the port is the URL's, or its scheme's (a
+        // redirect from :80 to https:// goes to 443, not back to 80).
+        .resolve(&host, std::net::SocketAddr::new(address.ip(), 0))
         .build();
     let Ok(client) = client else {
         return answer("error", "cannot be asked".into());
