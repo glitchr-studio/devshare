@@ -67,7 +67,9 @@ header strong { font-size: 15px; font-weight: 600; }
 .card .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--line); flex: none; }
 .card .dot.on { background: var(--present); }
 .card .dot.warn { background: var(--attention); }
-.card .dot.off { background: var(--danger); opacity: 0.55; }
+/* Not started: neutral, as in the window. Colour is for running (green)
+   and for a project that cannot be shared (amber). */
+.card .dot.off { background: var(--muted); opacity: 0.45; }
 .card .who { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .card .who strong { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card .who span { font: 11px/1.3 ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
