@@ -284,8 +284,10 @@ fn set_commands<R: Runtime>(
 #[tauri::command]
 fn open_local(url: String) -> Result<(), String> {
     let parsed = url::Url::parse(&url).map_err(|error| error.to_string())?;
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
     let local = matches!(parsed.scheme(), "http" | "https")
-        && matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+        && (matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]")
+            || loopback_names().contains(&host));
     if !local {
         return Err("only this machine's own addresses are opened from here".into());
     }
@@ -313,10 +315,16 @@ fn restore_project<R: Runtime>(
     Ok(())
 }
 
-/// The projects, by folder, whose services answer on this machine: the
-/// others are not started.
+/// Whether a project runs: `running` when every port it announces answers,
+/// `partial` when only some do, `stopped` when none does.
+#[derive(Serialize)]
+struct Running {
+    path: String,
+    state: &'static str,
+}
+
 #[tauri::command]
-async fn running(paths: Vec<String>) -> Result<Vec<String>, String> {
+async fn running(paths: Vec<String>) -> Result<Vec<Running>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let options = discovery_options();
         std::thread::scope(|scope| {
@@ -324,14 +332,15 @@ async fn running(paths: Vec<String>) -> Result<Vec<String>, String> {
                 .iter()
                 .map(|path| {
                     let options = &options;
-                    scope.spawn(move || {
-                        answers(std::path::Path::new(path), options).then(|| path.clone())
+                    scope.spawn(move || Running {
+                        state: state_of(std::path::Path::new(path), options),
+                        path: path.clone(),
                     })
                 })
                 .collect();
             checks
                 .into_iter()
-                .filter_map(|check| check.join().ok().flatten())
+                .filter_map(|check| check.join().ok())
                 .collect()
         })
     })
@@ -339,36 +348,202 @@ async fn running(paths: Vec<String>) -> Result<Vec<String>, String> {
     .map_err(|error| error.to_string())
 }
 
-/// Whether one of a project's services answers on this machine.
-fn answers(folder: &std::path::Path, options: &discover::Options) -> bool {
-    let config = if folder.is_file() {
-        environment::Config::load(Some(folder.to_path_buf())).ok()
-    } else if folder.join(discover::FILE).is_file() {
-        environment::Config::of(folder).ok()
+/// What a project shares, read without writing anything into its folder.
+fn config_of(path: &std::path::Path, options: &discover::Options) -> Option<environment::Config> {
+    if path.is_file() {
+        environment::Config::load(Some(path.to_path_buf())).ok()
+    } else if path.join(discover::FILE).is_file() {
+        environment::Config::of(path).ok()
     } else {
-        discover::discover(folder, options)
+        discover::discover(path, options)
             .ok()
             .map(|found| found.config())
+    }
+}
+
+/// Where the host agent dials each of a project's ports, once each.
+fn targets(config: &environment::Config) -> Vec<String> {
+    let mut targets: Vec<String> = Vec::new();
+    for service in config
+        .environments
+        .values()
+        .flat_map(|environment| &environment.services)
+    {
+        let target = service
+            .target
+            .clone()
+            .unwrap_or_else(|| format!("127.0.0.1:{}", service.port));
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+    }
+    targets
+}
+
+fn listens(target: &str) -> bool {
+    std::net::ToSocketAddrs::to_socket_addrs(target)
+        .ok()
+        .and_then(|mut addresses| addresses.next())
+        .is_some_and(|address| {
+            std::net::TcpStream::connect_timeout(&address, Duration::from_millis(300)).is_ok()
+        })
+}
+
+fn state_of(path: &std::path::Path, options: &discover::Options) -> &'static str {
+    let Some(config) = config_of(path, options) else {
+        return "stopped";
     };
-    config.is_some_and(|config| {
-        config
-            .environments
-            .values()
-            .flat_map(|environment| &environment.services)
-            .any(|service| {
-                let target = service
-                    .target
-                    .clone()
-                    .unwrap_or_else(|| format!("127.0.0.1:{}", service.port));
-                std::net::ToSocketAddrs::to_socket_addrs(&target)
-                    .ok()
-                    .and_then(|mut addresses| addresses.next())
-                    .is_some_and(|address| {
-                        std::net::TcpStream::connect_timeout(&address, Duration::from_millis(300))
-                            .is_ok()
-                    })
+    let targets = targets(&config);
+    let answering = targets.iter().filter(|target| listens(target)).count();
+    match answering {
+        0 => "stopped",
+        count if count == targets.len() => "running",
+        _ => "partial",
+    }
+}
+
+/// One address of a project, as this machine reaches it.
+#[derive(Serialize)]
+struct AddressCheck {
+    host: String,
+    port: u16,
+    /// What to open in a browser here: the name when this machine's
+    /// /etc/hosts gives it to the loopback, else the address dialled.
+    url: String,
+    /// `ok` (a page), `error` (an HTTP error, or not a page), `down`.
+    state: &'static str,
+    /// `200 OK`, `426 Upgrade Required`, `nothing answers`…
+    detail: String,
+    tls: bool,
+}
+
+/// Every address of a project: whether it answers, with what.
+#[tauri::command]
+async fn check_project(path: String) -> Result<Vec<AddressCheck>, String> {
+    let options = discovery_options();
+    let path = PathBuf::from(path);
+    let config = tauri::async_runtime::spawn_blocking(move || config_of(&path, &options))
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or("this project cannot be read")?;
+    let named = loopback_names();
+    let mut checks = Vec::new();
+    let mut seen = Vec::new();
+    for service in config
+        .environments
+        .values()
+        .flat_map(|environment| &environment.services)
+    {
+        if seen.contains(&(service.host.clone(), service.port)) {
+            continue;
+        }
+        seen.push((service.host.clone(), service.port));
+        let target = service
+            .target
+            .clone()
+            .unwrap_or_else(|| format!("127.0.0.1:{}", service.port));
+        let (host, port, named) = (
+            service.host.clone(),
+            service.port,
+            named.contains(&service.host),
+        );
+        checks.push(tokio::spawn(async move {
+            check(host, port, target, named).await
+        }));
+    }
+    let mut done = Vec::new();
+    for check in checks {
+        if let Ok(check) = check.await {
+            done.push(check);
+        }
+    }
+    Ok(done)
+}
+
+async fn check(host: String, port: u16, target: String, named: bool) -> AddressCheck {
+    use devshare_core::probe::{probe, Probe};
+    let probed = probe(&target, &host).await;
+    let tls = matches!(probed, Probe::Tls { .. });
+    let scheme = if tls { "https" } else { "http" };
+    let dialled = target
+        .rsplit_once(':')
+        .map(|(address, _)| address)
+        .unwrap_or(&target);
+    let target_port = target
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse().ok())
+        .unwrap_or(port);
+    let shown = if named {
+        host.clone()
+    } else {
+        dialled.replace("127.0.0.1", "localhost")
+    };
+    let url = format!("{scheme}://{shown}:{target_port}");
+    let answer = |state, detail: String| AddressCheck {
+        host: host.clone(),
+        port,
+        url: url.clone(),
+        state,
+        detail,
+        tls,
+    };
+    if probed == Probe::Down {
+        return answer("down", "nothing answers".into());
+    }
+    // Asked by its name, as a guest would, whatever this machine resolves.
+    let Some(address) = std::net::ToSocketAddrs::to_socket_addrs(&target)
+        .ok()
+        .and_then(|mut addresses| addresses.next())
+    else {
+        return answer("down", "nothing answers".into());
+    };
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(4))
+        .resolve(&host, address)
+        .build();
+    let Ok(client) = client else {
+        return answer("error", "cannot be asked".into());
+    };
+    match client
+        .get(format!("{scheme}://{host}:{target_port}/"))
+        .send()
+        .await
+    {
+        Ok(response) => {
+            let status = response.status();
+            let detail = format!(
+                "{} {}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("")
+            )
+            .trim()
+            .to_string();
+            answer(if status.as_u16() < 400 { "ok" } else { "error" }, detail)
+        }
+        Err(error) if error.is_timeout() => answer("error", "answers, but not in time".into()),
+        Err(_) => answer("error", "answers, but not with a web page".into()),
+    }
+}
+
+/// The names this machine's /etc/hosts gives to its loopback.
+fn loopback_names() -> Vec<String> {
+    std::fs::read_to_string("/etc/hosts")
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| {
+            let line = line.split('#').next().unwrap_or_default();
+            let mut words = line.split_whitespace();
+            let address: std::net::IpAddr = words.next()?.parse().ok()?;
+            address.is_loopback().then(|| {
+                words
+                    .map(|word| word.to_ascii_lowercase())
+                    .collect::<Vec<_>>()
             })
-    })
+        })
+        .flatten()
+        .collect()
 }
 
 /// Puts the panel away: after a choice made in it that opens the window.
@@ -761,6 +936,7 @@ pub fn create<R: Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
             open,
             handed,
             running,
+            check_project,
             run_project,
             settings,
             save_settings,

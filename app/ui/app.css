@@ -139,10 +139,10 @@ html:not(.mac) body.no-sidebar .content .bar { padding-left: 52px; }
 .popover button { text-align: left; border: none; background: none; padding: 6px 10px; border-radius: 6px; }
 .popover button:hover { background: var(--selected); }
 
-.nav li.nav-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 8px; cursor: default; }
+.nav li.nav-row { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 8px; cursor: default; }
 .nav li.nav-row:hover { background: var(--selected); }
 .nav li.nav-row.selected { background: var(--accent); color: #fff; }
-.nav li.nav-row.selected .nav-sub, .nav li.nav-row.selected .nav-summary { color: rgba(255,255,255,0.8); }
+.nav li.nav-row.selected .nav-sub { color: rgba(255,255,255,0.8); }
 .nav li.nav-row.selected .dot.on { background: #fff; }
 .nav li.nav-row.selected input.switch { background: rgba(255,255,255,0.35); }
 .nav li.nav-row.selected input.switch:checked { background: rgba(255,255,255,0.95); }
@@ -152,9 +152,7 @@ html:not(.mac) body.no-sidebar .content .bar { padding-left: 52px; }
 .nav-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .nav-main strong { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav-sub { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.nav-summary { flex-basis: 100%; display: none; font-size: 11px; color: var(--muted); padding-left: 40px; }
-.nav li.nav-row.selected .nav-summary { display: block; }
-.nav-foot { padding: 10px 8px 0; margin: 0; }
+.nav li.nav-row.selected .nav-foot { padding: 10px 8px 0; margin: 0; }
 #none { padding: 4px 8px; }
 
 /* ------------------------------------------------------------- the pages */
@@ -270,3 +268,8 @@ html:not(.mac) body.no-sidebar .content .bar { padding-left: 52px; }
 .joined li .mono { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .joined .tag { font-size: 10px; letter-spacing: 0.04em; color: var(--muted); }
 .joined .tag.certified { color: var(--present); }
+
+.state.partial, .attention { color: var(--attention); }
+#preview-note { white-space: pre-wrap; }
+.addresses .dot { margin-right: 2px; }
+.addresses .local.mono { font-size: 11px; }

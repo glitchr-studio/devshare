@@ -43,7 +43,8 @@ let selected = null;
 let page = 'share';
 let sharingNow = false;
 let joinedNow = false;
-let runningSet = new Set();
+// Folder → `running`, `partial` or `stopped`.
+let states = new Map();
 // True while a join is under way: sharing waits for it.
 let joining = false;
 
@@ -136,16 +137,8 @@ function switchFor(project) {
   return toggle;
 }
 
-function summaryOf(project) {
-  const running = runningSet.has(project.folder);
-  if (project.problem) return project.problem;
-  const names = project.names.length === 1 ? '1 name' : `${project.names.length} names`;
-  return `${names} · ports ${project.ports.join(', ')} · ${running ? 'running' : 'not started'}`;
-}
-
 function projectRow(project) {
   const dot = element('span', { className: 'dot' });
-  const summary = element('span', { className: 'nav-summary' });
   const row = element('li', { className: 'nav-row' }, [
     switchFor(project),
     element('span', { className: 'nav-main' }, [
@@ -153,7 +146,6 @@ function projectRow(project) {
       element('span', { className: 'nav-sub mono', textContent: project.hostname ?? (project.problem ? 'cannot be shared' : '') }),
     ]),
     dot,
-    summary,
   ]);
   row.dataset.page = 'project';
   row.dataset.folder = project.folder;
@@ -163,19 +155,23 @@ function projectRow(project) {
     renderProject(project);
     show('project');
   });
-  row.running = (running) => {
-    dot.className = `dot ${project.problem ? 'warn' : running ? 'on' : ''}`;
-    summary.textContent = summaryOf(project);
+  row.running = (state) => {
+    dot.className = `dot ${project.problem || state === 'partial' ? 'warn' : state === 'running' ? 'on' : ''}`;
+    dot.title = project.problem ?? STATE_WORDS[state];
   };
-  row.running(runningSet.has(project.folder));
+  row.running(states.get(project.folder));
   return row;
 }
 
-// Which projects answer on their ports.
+const STATE_WORDS = { running: 'Running', partial: 'Partly running: not every port answers', stopped: 'Not started' };
+
+// Which projects answer on their ports: all of them (green), some (amber),
+// none (grey).
 async function refreshRunning() {
   const folders = listed.map((project) => project.folder);
-  runningSet = new Set(await invoke('running', { paths: folders }).catch(() => []));
-  for (const row of $('projects').children) row.running(runningSet.has(row.dataset.folder));
+  const found = await invoke('running', { paths: folders }).catch(() => []);
+  states = new Map(found.map((one) => [one.path, one.state]));
+  for (const row of $('projects').children) row.running(states.get(row.dataset.folder));
   const current = listed.find((project) => project.folder === selected);
   if (current && page === 'project') projectState(current);
 }
@@ -192,15 +188,13 @@ function renderProject(project) {
   $('project-problem').hidden = !project.problem;
   $('project-problem').textContent = project.problem ?? '';
   $('project-folder').textContent = home(project.folder);
-  $('project-addresses').replaceChildren(...project.addresses.map((address) => {
-    const open = element('button', { type: 'button', className: 'small', textContent: 'Open' });
-    open.addEventListener('click', () => invoke('open_local', { url: address.local }).catch((error) => { $('project-problem').hidden = false; $('project-problem').textContent = String(error); }));
-    return element('li', {}, [
+  $('project-addresses').replaceChildren(...project.addresses.map((address) =>
+    element('li', {}, [
+      element('span', { className: 'dot' }),
       element('span', { className: 'name mono', textContent: `${address.host}:${address.port}` }),
-      element('span', { className: 'local mono', textContent: address.local }),
-      open,
-    ]);
-  }));
+      element('span', { className: 'local muted', textContent: 'checking…' }),
+    ])));
+  checkProject(project);
   const form = $('project-commands').elements;
   form.up.value = project.local_up ?? '';
   form.up.placeholder = project.usual_up ?? 'nothing known: say how';
@@ -211,19 +205,65 @@ function renderProject(project) {
 }
 
 function projectState(project) {
-  const running = runningSet.has(project.folder);
-  $('project-state').textContent = project.problem ? '' : running ? 'Running' : 'Not started';
-  $('project-state').className = running ? 'state on' : 'state';
-  $('project-start').hidden = running || !project.startable || Boolean(project.problem);
-  $('project-stop').hidden = !running || !project.startable;
-  if (running && project.preview) {
-    if ($('preview').getAttribute('src') !== project.preview) $('preview').src = project.preview;
+  const state = states.get(project.folder) ?? 'stopped';
+  $('project-state').textContent = project.problem ? '' : STATE_WORDS[state].split(':')[0];
+  $('project-state').className = state === 'running' ? 'state on' : state === 'partial' ? 'state partial' : 'state';
+  $('project-start').hidden = state === 'running' || !project.startable || Boolean(project.problem);
+  $('project-stop').hidden = state === 'stopped' || !project.startable;
+}
+
+// Every address of the project, asked as a guest would; the preview shows
+// the page when one answers with a page, and says why otherwise.
+let checking = 0;
+async function checkProject(project) {
+  const mine = ++checking;
+  let checks;
+  try {
+    checks = await invoke('check_project', { path: project.folder });
+  } catch (error) {
+    checks = [];
+  }
+  if (mine !== checking || selected !== project.folder) return;
+  $('project-addresses').replaceChildren(...checks.map((check) => {
+    const open = element('button', { type: 'button', className: 'small', textContent: 'Open', disabled: check.state === 'down' });
+    open.addEventListener('click', () => invoke('open_local', { url: check.url }).catch((error) => { $('project-problem').hidden = false; $('project-problem').textContent = String(error); }));
+    return element('li', {}, [
+      element('span', { className: `dot ${check.state === 'ok' ? 'on' : check.state === 'error' ? 'warn' : ''}`, title: check.detail }),
+      element('span', { className: 'name mono', textContent: `${check.host}:${check.port}` }),
+      element('span', { className: `local ${check.state === 'error' ? 'attention' : 'muted'}`, textContent: check.detail }),
+      element('span', { className: 'local mono muted', textContent: check.url }),
+      open,
+    ]);
+  }));
+  preview(project, checks);
+}
+
+function preview(project, checks) {
+  const port = project.preview ? Number(new URL(project.preview).port || (project.preview.startsWith('https') ? 443 : 80)) : null;
+  const pages = checks.filter((check) => check.state === 'ok');
+  const page = pages.find((check) => check.port === port) ?? pages[0];
+  if (page) {
+    if ($('preview').getAttribute('src') !== page.url) $('preview').src = page.url;
     $('preview-wrap').hidden = false;
-    $('preview-note').textContent = project.preview;
+    $('preview-note').className = 'muted small';
+    $('preview-note').textContent = page.tls
+      ? `${page.url} — if it stays blank, this Mac does not trust the project's certificate: Open it in the browser.`
+      : page.url;
+    return;
+  }
+  $('preview').removeAttribute('src');
+  $('preview-wrap').hidden = true;
+  const errors = checks.filter((check) => check.state === 'error');
+  $('preview-note').className = errors.length ? 'attention small' : 'muted small';
+  if (checks.length === 0) {
+    $('preview-note').textContent = 'Nothing to preview: the project shares no address.';
+  } else if (errors.length) {
+    $('preview-note').textContent = errors.map((check) => `${check.host}:${check.port} — ${check.detail}`).join('\n')
+      + (errors.length < checks.length ? '\nThe other ports do not answer.' : '');
   } else {
-    $('preview').removeAttribute('src');
-    $('preview-wrap').hidden = true;
-    $('preview-note').textContent = running ? 'No entry point to preview: give the project one in its devshare.toml.' : project.startable ? 'Start the project to see it here.' : 'Started some other way: it shows here once it answers.';
+    $('preview-note').textContent = project.startable
+      ? 'Nothing answers on its ports: the project is not started. Start it to see it here.'
+      : 'Nothing answers on its ports: start the project the way you usually do.';
   }
 }
 
@@ -278,7 +318,8 @@ async function runProject(project, action, button) {
   }
   button.disabled = false;
   button.textContent = label;
-  refreshRunning();
+  await refreshRunning();
+  checkProject(project);
 }
 
 // ----------------------------------------------------------- not listed

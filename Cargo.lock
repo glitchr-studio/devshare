@@ -1440,6 +1440,7 @@ dependencies = [
  "anyhow",
  "devshare-core",
  "devshare-server",
+ "reqwest 0.12.28",
  "resvg",
  "rqrr",
  "serde",

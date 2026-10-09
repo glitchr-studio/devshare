@@ -62,17 +62,18 @@ function card(project) {
   who.addEventListener('click', () => open(`project:${project.folder}`));
   const row = element('li', { className: 'card' }, [dot, who, toggle]);
   row.dataset.folder = project.folder;
-  row.running = (isRunning) => {
-    dot.className = `dot ${project.problem ? 'warn' : isRunning ? 'on' : 'off'}`;
-    dot.title = project.problem ? project.problem : isRunning ? 'Running' : 'Not started';
+  row.running = (state) => {
+    dot.className = `dot ${project.problem || state === 'partial' ? 'warn' : state === 'running' ? 'on' : 'off'}`;
+    dot.title = project.problem ?? { running: 'Running', partial: 'Partly running: not every port answers' }[state] ?? 'Not started';
   };
   return row;
 }
 
 async function running() {
   const folders = projects.map((project) => project.folder);
-  const up = new Set(await invoke('running', { paths: folders }).catch(() => []));
-  for (const row of $('cards').children) row.running(up.has(row.dataset.folder));
+  const found = await invoke('running', { paths: folders }).catch(() => []);
+  const states = new Map(found.map((one) => [one.path, one.state]));
+  for (const row of $('cards').children) row.running(states.get(row.dataset.folder));
 }
 
 // The Share button and what is said next to it.

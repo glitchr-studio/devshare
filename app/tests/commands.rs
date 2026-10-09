@@ -138,7 +138,7 @@ fn the_window_shares_sees_a_login_and_disconnects_it() {
     // Its service answers: it runs.
     assert_eq!(
         ask(&window, "running", json!({ "paths": [folder_of_site] })).unwrap(),
-        json!([folder_of_site])
+        json!([{ "path": folder_of_site, "state": "running" }])
     );
 
     // Nothing switched on is refused; then the Share button.

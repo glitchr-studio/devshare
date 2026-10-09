@@ -354,5 +354,72 @@ fn the_window_finds_projects_edits_the_settings_and_starts_nothing_it_cannot() {
         .unwrap()
         .contains("folders = [\"~/Sites\"]"));
 
+    // Each address says what it answers; the project is running when all
+    // of them answer, partly when some do.
+    let (ok, broken) = tauri::async_runtime::block_on(async {
+        let serve = |status: &'static str| async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                while let Ok((mut stream, _)) = listener.accept().await {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut request = [0u8; 1024];
+                    let _read = stream.read(&mut request).await;
+                    let answer = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    stream.write_all(answer.as_bytes()).await.ok();
+                }
+            });
+            address
+        };
+        (
+            serve("200 OK").await,
+            serve("500 Internal Server Error").await,
+        )
+    });
+    let gone = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let checked = home.join("checked.toml");
+    std::fs::write(
+        &checked,
+        format!(
+            "[environments.checked]\nservices = [\n  {{ host = \"checked.test\", port = {}, target = \"{ok}\" }},\n  {{ host = \"checked.test\", port = {}, target = \"{broken}\" }},\n  {{ host = \"checked.test\", port = {}, target = \"{gone}\" }},\n]\n",
+            ok.port(), broken.port(), gone.port()
+        ),
+    )
+    .unwrap();
+    let path = checked.display().to_string();
+    let checks = ask(&window, "check_project", json!({ "path": path })).unwrap();
+    let state = |port: u16| {
+        checks
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["port"] == port)
+            .map(|check| {
+                (
+                    check["state"].as_str().unwrap().to_string(),
+                    check["detail"].as_str().unwrap().to_string(),
+                )
+            })
+            .unwrap()
+    };
+    assert_eq!(state(ok.port()), ("ok".into(), "200 OK".into()));
+    assert_eq!(
+        state(broken.port()),
+        ("error".into(), "500 Internal Server Error".into())
+    );
+    assert_eq!(
+        state(gone.port()),
+        ("down".into(), "nothing answers".into())
+    );
+    assert_eq!(
+        ask(&window, "running", json!({ "paths": [path] })).unwrap(),
+        json!([{ "path": path, "state": "partial" }])
+    );
+
     std::fs::remove_dir_all(&home).ok();
 }
