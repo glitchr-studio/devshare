@@ -262,6 +262,7 @@ function renderProject(project) {
   form.down.placeholder = project.usual_down ?? 'nothing known: say how';
   $('project-commands-said').textContent = '';
   projectState(project);
+  showTab(tab);
 }
 
 function projectState(project) {
@@ -437,6 +438,133 @@ function preview(project, checks) {
     ? `${page.url} — this Mac does not trust its certificate yet: Certify it above, or Open it in the browser.`
     : page.url;
 }
+
+// ------------------------------------------------------------ its stack
+
+// The tab last looked at stays, from one project to the next.
+let tab = 'overview';
+try { tab = localStorage.getItem('project-tab') === 'stack' ? 'stack' : 'overview'; } catch (error) { /* not kept */ }
+const stacks = new Map(); // folder → what it is made of
+
+function showTab(which) {
+  tab = which;
+  try { localStorage.setItem('project-tab', which); } catch (error) { /* not kept */ }
+  $('tab-overview').setAttribute('aria-selected', String(which === 'overview'));
+  $('tab-stack').setAttribute('aria-selected', String(which === 'stack'));
+  $('project-overview').hidden = which !== 'overview';
+  $('project-stack').hidden = which !== 'stack';
+  const project = currentProject();
+  if (which === 'stack' && project) loadStack(project);
+}
+$('tab-overview').addEventListener('click', () => showTab('overview'));
+$('tab-stack').addEventListener('click', () => showTab('stack'));
+
+async function loadStack(project) {
+  const known = stacks.get(project.folder);
+  if (known) renderStack(known);
+  else {
+    for (const id of ['stack-technologies', 'stack-docker', 'stack-dependencies']) $(id).hidden = true;
+    $('stack-empty').hidden = false;
+    $('stack-empty').textContent = 'Reading the project…';
+  }
+  let stack;
+  try {
+    stack = await invoke('stack', { path: project.folder });
+  } catch (error) {
+    if (!known && selected === project.folder) $('stack-empty').textContent = String(error);
+    return;
+  }
+  stacks.set(project.folder, stack);
+  if (selected === project.folder && tab === 'stack') renderStack(stack);
+}
+
+const KINDS = ['Language', 'Framework', 'Frontend', 'Server', 'Build', 'Database', 'Cache', 'Storage', 'Search', 'Mail', 'Testing', 'Tool'];
+const KIND_WORDS = { Language: 'Languages', Framework: 'Frameworks', Frontend: 'Front end', Server: 'Servers', Build: 'Build', Database: 'Databases', Cache: 'Caches', Storage: 'Storage', Search: 'Search', Mail: 'Mail', Testing: 'Tests', Tool: 'Tools' };
+
+function renderStack(stack) {
+  const nothing = stack.technologies.length === 0 && stack.services.length === 0 && stack.manifests.length === 0;
+  $('stack-empty').hidden = !nothing;
+  $('stack-empty').textContent = 'Nothing recognised in this folder: no composer.json, package.json, Cargo.toml, requirements.txt, go.mod, Gemfile, Compose file or Dockerfile.';
+
+  // Technologies, kind by kind: where each was read is in its tooltip.
+  $('stack-technologies').hidden = stack.technologies.length === 0;
+  $('technologies').replaceChildren(...KINDS.flatMap((kind) => {
+    const found = stack.technologies.filter((technology) => technology.kind === kind);
+    if (found.length === 0) return [];
+    return [
+      element('dt', { textContent: KIND_WORDS[kind] }),
+      element('dd', {}, found.map((technology) => element('span', { className: 'chip', title: `From ${technology.from}` }, [
+        element('strong', { textContent: technology.name }),
+        ...(technology.version ? [element('span', { className: 'version', textContent: technology.version })] : []),
+      ]))),
+    ];
+  }));
+
+  // Docker: the services of the Compose files, then the Dockerfiles.
+  $('stack-docker').hidden = stack.services.length === 0 && stack.dockerfiles.length === 0;
+  $('docker-count').textContent = stack.services.length ? `${stack.services.length} service${stack.services.length > 1 ? 's' : ''}` : '';
+  document.querySelector('table.services').hidden = stack.services.length === 0;
+  $('services').replaceChildren(...stack.services.map((service) => {
+    const runs = service.technology ? `${service.technology}${service.version ? ` ${service.version}` : ''}` : '';
+    const from = service.image ?? (service.build ? `built from ${service.build}${service.target ? ` (${service.target})` : ''}` : '');
+    const name = element('td', {}, [element('strong', { textContent: service.name })]);
+    if (service.profiles.length) name.append(element('span', { className: 'profile', textContent: `profile ${service.profiles.join(', ')}`, title: 'Only started when this profile is asked for' }));
+    return element('tr', {}, [
+      name,
+      element('td', { textContent: runs }),
+      element('td', { className: 'mono from', textContent: from, title: from }),
+      element('td', { className: 'mono', textContent: service.ports.join(', ') }),
+      element('td', { textContent: service.depends_on.join(', ') }),
+    ]);
+  }));
+  $('dockerfiles').replaceChildren(...stack.dockerfiles.map((file) => element('li', {}, [
+    element('span', { className: 'mono', textContent: file.file }),
+    element('span', { className: 'muted', textContent: file.bases.length ? ` builds from ${file.bases.join(', ')}` : '' }),
+  ])));
+
+  // Dependencies, manifest by manifest.
+  $('stack-dependencies').hidden = stack.manifests.length === 0;
+  $('manifests').replaceChildren(...stack.manifests.map((manifest, index) => {
+    const list = element('ul', { className: 'packages' }, manifest.packages.map((dependency) => {
+      const row = element('li', {}, [
+        element('span', { className: 'mono name', textContent: dependency.name }),
+        ...(dependency.dev ? [element('span', { className: 'profile', textContent: 'dev' })] : []),
+        element('span', { className: 'mono installed', textContent: dependency.installed ?? '' }),
+        element('span', { className: 'mono muted asked', textContent: dependency.asked ?? '' }),
+      ]);
+      row.dataset.name = dependency.name.toLowerCase();
+      return row;
+    }));
+    const details = element('details', { className: 'manifest', open: index === 0 || manifest.packages.length <= 12 }, [
+      element('summary', {}, [
+        element('strong', { textContent: manifest.manager }),
+        element('span', { className: 'mono muted', textContent: ` ${manifest.file}` }),
+        element('span', { className: 'muted count', textContent: `${manifest.packages.length} package${manifest.packages.length === 1 ? '' : 's'}` }),
+      ]),
+      list,
+    ]);
+    details.dataset.count = manifest.packages.length;
+    return details;
+  }));
+  filterDependencies();
+}
+
+// The filter narrows every manifest, and opens those with a match.
+function filterDependencies() {
+  const wanted = $('dependency-filter').value.trim().toLowerCase();
+  for (const details of $('manifests').children) {
+    let shown = 0;
+    for (const row of details.querySelectorAll('li')) {
+      row.hidden = wanted !== '' && !row.dataset.name.includes(wanted);
+      if (!row.hidden) shown += 1;
+    }
+    const total = Number(details.dataset.count);
+    details.querySelector('.count').textContent = wanted ? `${shown} of ${total}` : `${total} package${total === 1 ? '' : 's'}`;
+    details.hidden = wanted !== '' && shown === 0;
+    if (wanted && shown) details.open = true;
+  }
+}
+$('dependency-filter').addEventListener('input', filterDependencies);
 
 function currentProject() {
   return listed.find((project) => project.folder === selected);

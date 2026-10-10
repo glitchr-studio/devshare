@@ -212,7 +212,6 @@ mod linux {
     pub fn revert(interface: &str) {
         resolvectl(&["revert".into(), interface.into()]);
     }
-
 }
 
 #[cfg(target_os = "macos")]

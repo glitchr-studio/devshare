@@ -28,6 +28,7 @@ use crate::environment::{Config, EnvironmentDef, ServiceDef, DEFAULT_DOMAIN};
 
 mod local;
 mod routes;
+pub mod stack;
 
 /// First line of a file this module wrote, and may therefore write again.
 const SIGNATURE: &str = "# Written by `devshare discover`";

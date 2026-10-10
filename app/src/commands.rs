@@ -353,6 +353,17 @@ fn open_local(url: String) -> Result<(), String> {
     tauri_plugin_opener::open_url(&url, None::<&str>).map_err(|error| error.to_string())
 }
 
+/// What a project is made of: its technologies, its Docker services and
+/// its dependencies, read from its own files.
+#[tauri::command]
+async fn stack(path: String) -> Result<discover::stack::Stack, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        discover::stack::detect(&folder_of(&PathBuf::from(path)))
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
 /// Opens a project's site in the browser: its entry point, by its name when
 /// this Mac points the name at itself, else on localhost.
 #[tauri::command]
@@ -372,7 +383,8 @@ async fn open_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<(),
         let mut url = url::Url::parse(&preview).map_err(|error| error.to_string())?;
         if let Some(name) = project.hostname {
             if loopback_names().contains(&name.to_ascii_lowercase()) {
-                url.set_host(Some(&name)).map_err(|error| error.to_string())?;
+                url.set_host(Some(&name))
+                    .map_err(|error| error.to_string())?;
             }
         }
         Ok::<_, String>(url.to_string())
@@ -572,9 +584,9 @@ async fn check_project(path: String) -> Result<Vec<AddressCheck>, String> {
         );
         // Whether the project's own containers hold the port: None when
         // only the port tells.
-        let ours = published.as_ref().and_then(|published| {
-            local_port(&target).map(|port| published.contains(&port))
-        });
+        let ours = published
+            .as_ref()
+            .and_then(|published| local_port(&target).map(|port| published.contains(&port)));
         checks.push(tokio::spawn(async move {
             check(host, port, target, named, ours).await
         }));
@@ -814,7 +826,9 @@ async fn certify<R: Runtime>(
     tauri::async_runtime::spawn_blocking(move || {
         let found = ca::find_project_certificate(&folder, served.as_deref(), &names);
         let authority = ca::DeviceCa::load(&domains).ok().flatten();
-        let trusted = authority.as_ref().is_some_and(|authority| authority.trusted());
+        let trusted = authority
+            .as_ref()
+            .is_some_and(|authority| authority.trusted());
         if when_needed && (found.is_none() || !trusted) {
             return Ok(None);
         }
@@ -1298,6 +1312,7 @@ pub fn create<R: Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
             set_commands,
             open_local,
             open_project,
+            stack,
             reveal,
             hide_panel,
             show_window,

@@ -97,7 +97,31 @@
         <label class="shared-switch" title="Starts or stops the project"><span id="project-state" class="state"></span><input id="project-switch" type="checkbox" class="switch"></label>
         <button id="project-share-now" type="button" class="primary">Share now</button>
       </header>
-      <div class="page">
+      <nav class="tabs" role="tablist">
+        <button id="tab-overview" type="button" role="tab" class="tab" aria-selected="true">Overview</button>
+        <button id="tab-stack" type="button" role="tab" class="tab" aria-selected="false">Stack</button>
+      </nav>
+      <!-- What it is made of, read from its own files. -->
+      <div id="project-stack" class="page" hidden>
+        <p id="stack-empty" class="muted" hidden></p>
+        <section id="stack-technologies" hidden>
+          <h2>Technologies</h2>
+          <dl id="technologies" class="technologies"></dl>
+        </section>
+        <section id="stack-docker" hidden>
+          <h2>Docker <span id="docker-count" class="muted"></span></h2>
+          <table class="services">
+            <thead><tr><th>Service</th><th>Runs</th><th>From</th><th>Ports</th><th>Needs</th></tr></thead>
+            <tbody id="services"></tbody>
+          </table>
+          <ul id="dockerfiles" class="dockerfiles"></ul>
+        </section>
+        <section id="stack-dependencies" hidden>
+          <h2 class="with-action">Dependencies <input id="dependency-filter" type="search" placeholder="Filter" spellcheck="false" autocomplete="off"></h2>
+          <div id="manifests"></div>
+        </section>
+      </div>
+      <div id="project-overview" class="page">
         <p id="project-problem" class="error" hidden></p>
         <section>
           <h2 class="with-action">Addresses <button id="check-again" type="button" class="link">Check again</button></h2>

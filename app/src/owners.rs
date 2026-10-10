@@ -37,7 +37,9 @@ pub fn published(folder: &Path) -> Option<Vec<u16>> {
         let stopped = stderr.contains("Cannot connect") || stderr.contains("daemon");
         return stopped.then(Vec::new);
     }
-    let folder = folder.canonicalize().unwrap_or_else(|_| folder.to_path_buf());
+    let folder = folder
+        .canonicalize()
+        .unwrap_or_else(|_| folder.to_path_buf());
     Some(ports_of(&stdout, &folder))
 }
 
@@ -108,9 +110,16 @@ fn name_of(program: &str) -> Option<String> {
 /// Whether a program is Docker's: published ports are held by it.
 pub fn is_docker(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
-    ["docker", "com.docke", "vpnkit", "orbstack", "limactl", "colima"]
-        .iter()
-        .any(|known| name.contains(known))
+    [
+        "docker",
+        "com.docke",
+        "vpnkit",
+        "orbstack",
+        "limactl",
+        "colima",
+    ]
+    .iter()
+    .any(|known| name.contains(known))
 }
 
 /// Runs a short command, given up on after `limit`.

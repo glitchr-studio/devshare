@@ -157,12 +157,14 @@ pub fn busy<R: Runtime>(app: &tauri::AppHandle<R>) -> Busy {
                 .collect();
             let mut frame = 0;
             while UNDER_WAY.load(Ordering::SeqCst) > 0 && !frames.is_empty() {
-                tray.set_icon(Some(frames[frame % frames.len()].clone())).ok();
+                tray.set_icon(Some(frames[frame % frames.len()].clone()))
+                    .ok();
                 tray.set_icon_as_template(true).ok();
                 frame += 1;
                 std::thread::sleep(std::time::Duration::from_millis(90));
             }
-            if let Ok(still) = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png")) {
+            if let Ok(still) = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))
+            {
                 tray.set_icon(Some(still)).ok();
                 tray.set_icon_as_template(true).ok();
             }
