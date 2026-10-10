@@ -237,13 +237,22 @@ function renderProject(project) {
   $('project-problem').hidden = !project.problem;
   $('project-problem').textContent = project.problem ?? '';
   $('project-folder').textContent = home(project.folder);
-  $('project-addresses').replaceChildren(...project.addresses.map((address) =>
-    element('li', {}, [
-      element('span', { className: 'dot' }),
-      element('span', { className: 'name mono', textContent: `${address.host}:${address.port}` }),
-      element('span', { className: 'local muted', textContent: 'checking…' }),
-    ])));
-  checkProject(project);
+  // What it answered last time stays shown until the new answers come:
+  // "checking…" only for a project never checked yet.
+  const known = lastChecks.get(project.folder);
+  if (known) {
+    showChecks(project, known.checks);
+  } else {
+    $('project-addresses').replaceChildren(...project.addresses.map((address) =>
+      element('li', {}, [
+        element('span', { className: 'dot' }),
+        element('span', { className: 'name mono', textContent: `${address.host}:${address.port}` }),
+        element('span', { className: 'local muted', textContent: 'checking…' }),
+      ])));
+    $('certify-section').hidden = true;
+    $('names-note').hidden = true;
+  }
+  if (!known || Date.now() - known.at > 5000) checkProject(project);
   const form = $('project-commands').elements;
   form.up.value = project.local_up ?? '';
   form.up.placeholder = project.usual_up ?? 'nothing known: say how';
@@ -273,6 +282,8 @@ $('project-restart').addEventListener('click', async () => {
 
 // Every address of the project, asked as a guest would; the preview shows
 // the page when one answers with a page, and says why otherwise.
+// The last answers of each project, and when they came.
+const lastChecks = new Map();
 let checking = 0;
 async function checkProject(project) {
   const mine = ++checking;
@@ -282,7 +293,12 @@ async function checkProject(project) {
   } catch (error) {
     checks = [];
   }
+  lastChecks.set(project.folder, { checks, at: Date.now() });
   if (mine !== checking || selected !== project.folder) return;
+  showChecks(project, checks);
+}
+
+function showChecks(project, checks) {
   // One row per port: the names that share it said together, when they
   // got the same answer.
   const rows = [];

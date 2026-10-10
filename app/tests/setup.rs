@@ -444,8 +444,10 @@ fn the_window_finds_projects_edits_the_settings_and_starts_nothing_it_cannot() {
             )
         )
     );
+    // It answers with a redirect: green, whatever lies at the end, which is
+    // said beside it.
     let (state, detail) = outcome(nowhere.port());
-    assert_eq!(state, "error", "{detail}");
+    assert_eq!(state, "ok", "{detail}");
     assert!(
         detail.starts_with("redirects to https://127.0.0.1:")
             && detail.ends_with(", where nothing answers"),

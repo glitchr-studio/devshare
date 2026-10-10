@@ -56,6 +56,8 @@ fn guest(user: &str, computer: &str) -> Device {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_owner_sees_logins_and_disconnects_one_guest() {
+    // Without a relay, wherever it runs: not the settings of the machine.
+    std::env::set_var("DEVSHARE_RELAY", "disabled");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let server = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(devshare_server::serve(listener));
