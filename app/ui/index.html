@@ -117,7 +117,13 @@
           <ul id="dockerfiles" class="dockerfiles"></ul>
         </section>
         <section id="stack-dependencies" hidden>
-          <h2 class="with-action">Dependencies <input id="dependency-filter" type="search" placeholder="Filter" spellcheck="false" autocomplete="off"></h2>
+          <h2 class="with-action">Dependencies
+            <input id="dependency-filter" type="search" placeholder="Filter" spellcheck="false" autocomplete="off">
+            <label id="outdated-only-label" class="plain" hidden><input id="outdated-only" type="checkbox"> Only those behind</label>
+            <span class="spacer"></span>
+            <button id="check-latest" type="button" class="small" title="Asks Packagist, npm and the other registries for each package's latest version, and your packages' repositories for the head of their branch">Check latest versions</button>
+          </h2>
+          <p id="latest-said" class="muted small"></p>
           <div id="manifests"></div>
         </section>
       </div>

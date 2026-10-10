@@ -40,7 +40,7 @@ pub struct Manifest {
     pub packages: Vec<Package>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct Package {
     pub name: String,
     /// What the manifest asks for: `^7.3`.
@@ -48,6 +48,10 @@ pub struct Package {
     /// What the lock file installed: `7.3.4`.
     pub installed: Option<String>,
     pub dev: bool,
+    /// The commit the lock file installed, for a package followed on a
+    /// branch (`3.x-dev`), and the repository it came from.
+    pub reference: Option<String>,
+    pub source: Option<String>,
 }
 
 /// A service of the Compose files, merged as Compose merges them.
@@ -403,6 +407,8 @@ fn composer(folder: &Path, prefix: &str, stack: &mut Stack) {
     };
     let file = format!("{prefix}composer.json");
     let mut installed: HashMap<String, String> = HashMap::new();
+    // name → (the commit installed, the repository it came from).
+    let mut sources: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
     if let Some(lock) = json(&folder.join("composer.lock")) {
         for group in ["packages", "packages-dev"] {
             for package in lock[group].as_array().into_iter().flatten() {
@@ -410,6 +416,16 @@ fn composer(folder: &Path, prefix: &str, stack: &mut Stack) {
                     (package["name"].as_str(), package["version"].as_str())
                 {
                     installed.insert(name.to_string(), plain(version));
+                    // The commit is under source, or under dist alone.
+                    let said = |key: &str| {
+                        [&package["source"][key], &package["dist"][key]]
+                            .into_iter()
+                            .filter_map(|value| value.as_str())
+                            .find(|value| !value.is_empty())
+                            .filter(|_| key == "reference" || package["source"][key].is_string())
+                            .map(str::to_string)
+                    };
+                    sources.insert(name.to_string(), (said("reference"), said("url")));
                 }
             }
         }
@@ -426,11 +442,14 @@ fn composer(folder: &Path, prefix: &str, stack: &mut Stack) {
             if name.starts_with("ext-") || name.starts_with("lib-") {
                 continue;
             }
+            let (reference, source) = sources.get(name).cloned().unwrap_or_default();
             packages.push(Package {
                 installed: installed.get(name).cloned(),
                 name: name.clone(),
                 asked,
                 dev,
+                reference,
+                source,
             });
         }
     }
@@ -513,6 +532,7 @@ fn npm(folder: &Path, prefix: &str, stack: &mut Stack) {
                 name: name.clone(),
                 asked: asked.as_str().map(str::to_string),
                 dev,
+                ..Package::default()
             });
         }
     }
@@ -573,6 +593,7 @@ fn cargo(folder: &Path, prefix: &str, stack: &mut Stack) {
                 name: name.clone(),
                 asked,
                 dev,
+                ..Package::default()
             });
         }
     };
@@ -637,6 +658,7 @@ fn python(folder: &Path, prefix: &str, stack: &mut Stack) {
                 name,
                 asked,
                 dev: false,
+                ..Package::default()
             })
             .collect();
         found.push((format!("{prefix}requirements.txt"), packages));
@@ -657,6 +679,7 @@ fn python(folder: &Path, prefix: &str, stack: &mut Stack) {
                     asked,
                     installed: None,
                     dev: false,
+                    ..Package::default()
                 });
             }
         }
@@ -674,6 +697,7 @@ fn python(folder: &Path, prefix: &str, stack: &mut Stack) {
                 asked: asked.as_str().map(str::to_string),
                 installed: None,
                 dev: false,
+                ..Package::default()
             });
         }
         if !packages.is_empty() {
@@ -715,6 +739,7 @@ fn go(folder: &Path, prefix: &str, stack: &mut Stack) {
                     asked: Some(plain(asked)),
                     installed: Some(plain(asked)),
                     dev: false,
+                    ..Package::default()
                 });
             }
         }
@@ -767,6 +792,7 @@ fn ruby(folder: &Path, prefix: &str, stack: &mut Stack) {
             name: name.to_string(),
             asked: asked.map(str::to_string),
             dev: false,
+            ..Package::default()
         });
     }
     technology(stack, "Ruby", None, "Language", &file);

@@ -364,6 +364,22 @@ async fn stack(path: String) -> Result<discover::stack::Stack, String> {
     .map_err(|error| error.to_string())
 }
 
+/// The latest version of each of a project's dependencies, asked of their
+/// registries (and, for a package followed on a branch, of its repository):
+/// only when the window asks, since it names the packages to them.
+#[tauri::command]
+async fn latest_versions<R: Runtime>(
+    app: AppHandle<R>,
+    path: String,
+) -> Result<Vec<discover::latest::Latest>, String> {
+    let _busy = crate::native::busy(&app);
+    let folder = folder_of(&PathBuf::from(path));
+    let stack = tauri::async_runtime::spawn_blocking(move || discover::stack::detect(&folder))
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(discover::latest::latest(&stack).await)
+}
+
 /// Opens a project's site in the browser: its entry point, by its name when
 /// this Mac points the name at itself, else on localhost.
 #[tauri::command]
@@ -1313,6 +1329,7 @@ pub fn create<R: Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
             open_local,
             open_project,
             stack,
+            latest_versions,
             reveal,
             hide_panel,
             show_window,

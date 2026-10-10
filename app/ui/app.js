@@ -522,49 +522,108 @@ function renderStack(stack) {
     element('span', { className: 'muted', textContent: file.bases.length ? ` builds from ${file.bases.join(', ')}` : '' }),
   ])));
 
-  // Dependencies, manifest by manifest.
+  // Dependencies, manifest by manifest: what is installed, and once
+  // asked for, the latest there is.
   $('stack-dependencies').hidden = stack.manifests.length === 0;
+  const latest = latests.get(selected);
+  const found = new Map((latest?.found ?? []).map((one) => [`${one.file}\n${one.name}`, one]));
   $('manifests').replaceChildren(...stack.manifests.map((manifest, index) => {
-    const list = element('ul', { className: 'packages' }, manifest.packages.map((dependency) => {
+    const head = element('li', { className: 'head' }, [
+      element('span', { className: 'name', textContent: 'Package' }),
+      element('span', { className: 'installed', textContent: 'Installed' }),
+      element('span', { className: 'latest', textContent: 'Latest' }),
+      element('span', { className: 'sync' }),
+    ]);
+    const list = element('ul', { className: 'packages' }, [head, ...manifest.packages.map((dependency) => {
+      const known = found.get(`${manifest.file}\n${dependency.name}`);
+      // A branch followed: the commit installed says more than "3.x-dev".
+      const commit = dependency.reference ? dependency.reference.slice(0, 7) : '';
+      const installed = element('span', { className: 'mono installed', title: dependency.reference ?? '' }, [
+        dependency.installed ?? '',
+        ...(commit && /dev/.test(dependency.installed ?? '') ? [element('span', { className: 'commit', textContent: commit })] : []),
+      ]);
+      if (!dependency.installed) installed.append(element('span', { className: 'muted', textContent: 'not installed' }));
+      const WORDS = { current: 'in sync', behind: 'update', major: 'new major', unknown: '' };
       const row = element('li', {}, [
-        element('span', { className: 'mono name', textContent: dependency.name }),
-        ...(dependency.dev ? [element('span', { className: 'profile', textContent: 'dev' })] : []),
-        element('span', { className: 'mono installed', textContent: dependency.installed ?? '' }),
-        element('span', { className: 'mono muted asked', textContent: dependency.asked ?? '' }),
+        element('span', { className: 'name' }, [
+          element('span', { className: 'mono', textContent: dependency.name }),
+          ...(dependency.dev ? [element('span', { className: 'profile', textContent: 'dev' })] : []),
+          element('span', { className: 'mono asked', textContent: dependency.asked ?? '', title: `Asked for: ${dependency.asked ?? ''}` }),
+        ]),
+        installed,
+        element('span', { className: 'mono latest', textContent: known ? (known.latest ?? '—') : '', title: known?.detail ?? '' }),
+        element('span', { className: `sync ${known?.state ?? ''}`, textContent: known ? (WORDS[known.state] || '') : '', title: known?.detail ?? '' }),
       ]);
       row.dataset.name = dependency.name.toLowerCase();
+      row.dataset.state = known?.state ?? '';
       return row;
-    }));
+    })]);
     const details = element('details', { className: 'manifest', open: index === 0 || manifest.packages.length <= 12 }, [
       element('summary', {}, [
         element('strong', { textContent: manifest.manager }),
         element('span', { className: 'mono muted', textContent: ` ${manifest.file}` }),
-        element('span', { className: 'muted count', textContent: `${manifest.packages.length} package${manifest.packages.length === 1 ? '' : 's'}` }),
+        element('span', { className: 'muted count' }),
       ]),
       list,
     ]);
-    details.dataset.count = manifest.packages.length;
     return details;
   }));
+  $('outdated-only-label').hidden = !latest;
+  $('check-latest').textContent = latest ? 'Check again' : 'Check latest versions';
+  if (latest) {
+    const behind = latest.found.filter((one) => one.state === 'behind' || one.state === 'major').length;
+    const unknown = latest.found.filter((one) => one.state === 'unknown').length;
+    $('latest-said').textContent = `${behind === 0 ? 'Everything is in sync' : `${behind} of ${latest.found.length} behind`}${unknown ? `, ${unknown} not known` : ''} · checked at ${new Date(latest.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  } else {
+    $('latest-said').textContent = '';
+  }
   filterDependencies();
 }
+
+// The latest versions, once asked for: folder → { found, at }.
+const latests = new Map();
+$('check-latest').addEventListener('click', async () => {
+  const project = currentProject();
+  if (!project) return;
+  const button = $('check-latest');
+  button.disabled = true;
+  button.textContent = 'Checking…';
+  $('latest-said').textContent = 'Asking the registries…';
+  try {
+    const found = await invoke('latest_versions', { path: project.folder });
+    latests.set(project.folder, { found, at: Date.now() });
+  } catch (error) {
+    $('latest-said').textContent = String(error);
+  }
+  button.disabled = false;
+  const stack = stacks.get(project.folder);
+  if (stack && selected === project.folder) renderStack(stack);
+});
 
 // The filter narrows every manifest, and opens those with a match.
 function filterDependencies() {
   const wanted = $('dependency-filter').value.trim().toLowerCase();
+  const behindOnly = $('outdated-only').checked && !$('outdated-only-label').hidden;
+  const narrowed = wanted !== '' || behindOnly;
   for (const details of $('manifests').children) {
     let shown = 0;
-    for (const row of details.querySelectorAll('li')) {
-      row.hidden = wanted !== '' && !row.dataset.name.includes(wanted);
+    let total = 0;
+    let behind = 0;
+    for (const row of details.querySelectorAll('li:not(.head)')) {
+      total += 1;
+      const late = row.dataset.state === 'behind' || row.dataset.state === 'major';
+      if (late) behind += 1;
+      row.hidden = (wanted !== '' && !row.dataset.name.includes(wanted)) || (behindOnly && !late);
       if (!row.hidden) shown += 1;
     }
-    const total = Number(details.dataset.count);
-    details.querySelector('.count').textContent = wanted ? `${shown} of ${total}` : `${total} package${total === 1 ? '' : 's'}`;
-    details.hidden = wanted !== '' && shown === 0;
-    if (wanted && shown) details.open = true;
+    const count = narrowed ? `${shown} of ${total}` : `${total} package${total === 1 ? '' : 's'}`;
+    details.querySelector('.count').textContent = behind ? `${count} · ${behind} behind` : count;
+    details.hidden = narrowed && shown === 0;
+    if (narrowed && shown) details.open = true;
   }
 }
 $('dependency-filter').addEventListener('input', filterDependencies);
+$('outdated-only').addEventListener('change', filterDependencies);
 
 function currentProject() {
   return listed.find((project) => project.folder === selected);

@@ -336,8 +336,22 @@ table.services td:last-child { white-space: normal; }
 .manifest summary { cursor: default; display: flex; align-items: baseline; gap: 6px; padding: 2px 0; }
 .manifest summary .count { margin-left: auto; font-size: 12px; }
 .packages { list-style: none; margin: 6px 0 4px; padding: 0; font-size: 12.5px; }
-.packages li { display: flex; align-items: baseline; gap: 8px; padding: 3px 0 3px 14px; }
-.packages li:hover { background: var(--hover, rgba(127, 127, 127, 0.08)); }
-.packages .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.packages .installed { width: 110px; text-align: right; }
-.packages .asked { width: 110px; text-align: right; font-size: 11.5px; }
+.packages li { display: grid; grid-template-columns: minmax(0, 1fr) 150px 110px 84px; align-items: baseline; column-gap: 12px; padding: 4px 0 4px 14px; }
+.packages li:not(.head):hover { background: var(--hover, rgba(127, 127, 127, 0.08)); }
+.packages li.head { color: var(--muted); font-size: 11.5px; border-bottom: 1px solid var(--line); padding-bottom: 3px; }
+.packages .name { min-width: 0; display: flex; align-items: baseline; gap: 8px; overflow: hidden; white-space: nowrap; }
+.packages .name > .mono:first-child { overflow: hidden; text-overflow: ellipsis; }
+.packages .asked { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; flex-shrink: 2; }
+.packages .installed, .packages .latest { text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.packages .commit { margin-left: 6px; color: var(--muted); font-size: 11px; }
+.packages .sync { font-size: 11.5px; white-space: nowrap; }
+.packages .sync.current { color: var(--present); }
+.packages .sync.current::before { content: "✓ "; }
+.packages .sync.behind { color: var(--attention); }
+.packages .sync.behind::before { content: "↑ "; }
+.packages .sync.major { color: var(--muted); }
+.packages .sync.major::before { content: "⇡ "; }
+h2.with-action .spacer { flex: 1; }
+h2.with-action button, h2.with-action label.plain { text-transform: none; letter-spacing: 0; font-weight: 400; }
+label.plain { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
+#latest-said { margin: 4px 0 6px; min-height: 1em; }

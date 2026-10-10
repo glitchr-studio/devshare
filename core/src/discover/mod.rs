@@ -26,6 +26,7 @@ use serde_yaml_ng::Value;
 
 use crate::environment::{Config, EnvironmentDef, ServiceDef, DEFAULT_DOMAIN};
 
+pub mod latest;
 mod local;
 mod routes;
 pub mod stack;
