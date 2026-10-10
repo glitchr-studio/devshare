@@ -93,6 +93,11 @@ fn the_window_shares_sees_a_login_and_disconnects_it() {
     std::env::set_var("HOME", &folder);
     std::env::set_var("DEVSHARE_APP_DATA", folder.join("app-data"));
     std::env::set_var("DEVSHARE_RELAY", "disabled");
+    // Never the helper of the machine the tests run on.
+    std::env::set_var(
+        "DEVSHARE_HELPER_SOCKET",
+        "/nonexistent/devshare-helper.sock",
+    );
     std::env::remove_var("DEVSHARE_SERVER");
 
     let app = commands::create(mock_builder());

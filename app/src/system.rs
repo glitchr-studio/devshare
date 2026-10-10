@@ -126,7 +126,7 @@ pub async fn install_helper() -> Result<(), String> {
         return Ok(());
     }
     let said = String::from_utf8_lossy(&output.stderr);
-    if said.contains("User canceled") || said.contains("-128") {
+    if said.contains("User canceled") || said.contains("(-128)") {
         return Err("not installed: the password was not given".into());
     }
     Err(devshare_core::protocol::clean(&said, 400))

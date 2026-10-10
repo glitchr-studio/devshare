@@ -49,43 +49,82 @@ pub(crate) struct LocalNames {
 pub fn sync_names<R: Runtime>(app: &AppHandle<R>) {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let Ok(projects) = projects(&app) else {
-            return;
-        };
-        let settings = Settings::load().unwrap_or_default();
-        let policy = devshare_core::protocol::names::NamePolicy::with(Some(settings.domain()));
-        let mut names: Vec<String> = projects
-            .list(&settings, &discovery_options())
-            .projects
-            .iter()
-            .flat_map(|project| project.names.clone())
-            .filter(|name| name != "localhost" && policy.accepts(name))
-            .collect();
-        names.sort();
-        names.dedup();
-        let state = app.state::<LocalNames>();
-        let mut helper = state.helper.lock().unwrap();
-        if *state.sent.lock().unwrap() == names && helper.is_some() {
-            return;
-        }
+        point_names_now(&app);
+    });
+}
+
+/// Points the names now, and says what went wrong if something did. What
+/// counts is /etc/hosts itself: names sent once and gone since (another
+/// program's doing, a helper restarted) are sent again.
+fn point_names_now<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
+    let projects = projects(app).ok()?;
+    let settings = Settings::load().unwrap_or_default();
+    let policy = devshare_core::protocol::names::NamePolicy::with(Some(settings.domain()));
+    let mut names: Vec<String> = projects
+        .list(&settings, &discovery_options())
+        .projects
+        .iter()
+        .flat_map(|project| project.names.clone())
+        .filter(|name| name != "localhost" && policy.accepts(name))
+        .collect();
+    names.sort();
+    names.dedup();
+    let state = app.state::<LocalNames>();
+    let mut helper = state.helper.lock().unwrap();
+    let pointed = loopback_names();
+    let in_place = names
+        .iter()
+        .all(|name| pointed.contains(&name.to_ascii_lowercase()));
+    if *state.sent.lock().unwrap() == names && helper.is_some() && in_place {
+        return None;
+    }
+    // Twice at most: a connection to a helper that was restarted since is
+    // dead, and only says so when used.
+    let mut trouble = None;
+    for _ in 0..2 {
         if helper.is_none() {
-            *helper = devshare_core::guest::Helper::connect().ok().flatten();
+            match devshare_core::guest::Helper::connect() {
+                Ok(Some(connection)) => *helper = Some(connection),
+                // Not installed: nothing to say here, the settings say it.
+                Ok(None) => {
+                    trouble = None;
+                    break;
+                }
+                Err(error) => {
+                    trouble = Some(format!("{error:#}"));
+                    break;
+                }
+            }
         }
         let Some(connection) = helper.as_mut() else {
-            *state.trouble.lock().unwrap() = None;
-            return;
+            break;
         };
         match connection.local(&names) {
             Ok(()) => {
-                *state.sent.lock().unwrap() = names;
-                *state.trouble.lock().unwrap() = None;
+                *state.sent.lock().unwrap() = names.clone();
+                trouble = None;
+                break;
             }
             Err(error) => {
                 *helper = None;
-                *state.trouble.lock().unwrap() = Some(format!("{error:#}"));
+                trouble = Some(format!("{error:#}"));
             }
         }
-    });
+    }
+    *state.trouble.lock().unwrap() = trouble.clone();
+    trouble
+}
+
+/// Points the names at this Mac now: the window's "try again".
+#[tauri::command]
+async fn point_names<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    let trouble = tauri::async_runtime::spawn_blocking(move || point_names_now(&app))
+        .await
+        .map_err(|error| error.to_string())?;
+    match trouble {
+        Some(trouble) => Err(trouble),
+        None => Ok(()),
+    }
 }
 
 /// An invitation handed over by a link before the window asked for it.
@@ -344,13 +383,26 @@ fn set_commands<R: Runtime>(
 fn open_local(url: String) -> Result<(), String> {
     let parsed = url::Url::parse(&url).map_err(|error| error.to_string())?;
     let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
-    let local = matches!(parsed.scheme(), "http" | "https")
-        && (matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]")
-            || loopback_names().contains(&host));
-    if !local {
-        return Err("only this machine's own addresses are opened from here".into());
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("only web addresses are opened from here".into());
     }
-    tauri_plugin_opener::open_url(&url, None::<&str>).map_err(|error| error.to_string())
+    let local = matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]")
+        || loopback_names().contains(&host);
+    let mut parsed = parsed;
+    if !local {
+        // A development name that does not lead to this Mac yet (the helper
+        // has not pointed it): the same address on localhost. Nothing else
+        // is opened from here.
+        let settings = Settings::load().unwrap_or_default();
+        let policy = devshare_core::protocol::names::NamePolicy::with(Some(settings.domain()));
+        if !policy.accepts(&host) {
+            return Err("only this machine's own addresses are opened from here".into());
+        }
+        parsed
+            .set_host(Some("localhost"))
+            .map_err(|error| error.to_string())?;
+    }
+    tauri_plugin_opener::open_url(parsed.as_str(), None::<&str>).map_err(|error| error.to_string())
 }
 
 /// What a project is made of: its technologies, its Docker services and
@@ -442,7 +494,20 @@ struct Running {
 }
 
 #[tauri::command]
-async fn running(paths: Vec<String>) -> Result<Vec<Running>, String> {
+async fn running<R: Runtime>(
+    app: AppHandle<R>,
+    paths: Vec<String>,
+) -> Result<Vec<Running>, String> {
+    // The window asks this every few seconds: the occasion to see that the
+    // projects' names still point at this Mac, now and then.
+    static CHECKED: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+    {
+        let mut checked = CHECKED.lock().unwrap();
+        if checked.is_none_or(|at| at.elapsed() > Duration::from_secs(15)) {
+            *checked = Some(std::time::Instant::now());
+            sync_names(&app);
+        }
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let options = discovery_options();
         std::thread::scope(|scope| {
@@ -1122,10 +1187,31 @@ async fn computer<R: Runtime>(app: AppHandle<R>) -> Result<Computer, String> {
 #[tauri::command]
 async fn install_helper<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     crate::system::install_helper().await?;
-    // A new helper: the names go to it.
+    // A new helper: the names go to it, once it listens (the installer
+    // returns as soon as the system has been told to start it).
     *app.state::<LocalNames>().helper.lock().unwrap() = None;
-    sync_names(&app);
-    Ok(())
+    let trouble = tauri::async_runtime::spawn_blocking(move || {
+        let mut trouble = None;
+        for _ in 0..25 {
+            let listening = matches!(devshare_core::guest::Helper::connect(), Ok(Some(_)));
+            if listening {
+                trouble = point_names_now(&app);
+                if trouble.is_none() {
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        trouble
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    match trouble {
+        Some(trouble) => Err(format!(
+            "installed, but the names could not be pointed: {trouble}"
+        )),
+        None => Ok(()),
+    }
 }
 
 /// `install`, `renew` or `remove` this device's certificate authority. On
@@ -1330,6 +1416,7 @@ pub fn create<R: Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
             open_project,
             stack,
             latest_versions,
+            point_names,
             reveal,
             hide_panel,
             show_window,

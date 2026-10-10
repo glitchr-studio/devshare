@@ -335,30 +335,54 @@ function showChecks(project, checks) {
 }
 
 // The project's names open on this Mac once the helper points them at it;
-// until then the addresses open on localhost, and this says why.
+// until then the addresses open on localhost, and this says why. The app
+// points them again by itself: the button is for not waiting, and offers
+// the helper's installation only when that is what is missing.
+let namesFix = 'point';
 function namesNote(checks) {
   const unnamed = [...new Set(checks
     .filter((check) => check.host !== 'localhost' && !new URL(check.url).hostname.endsWith(check.host))
     .map((check) => check.host))];
   $('names-note').hidden = unnamed.length === 0;
-  if (unnamed.length) {
-    $('names-text').textContent = `${unnamed.join(', ')} ${unnamed.length > 1 ? 'do' : 'does'} not lead to this Mac yet, so Open uses localhost. DevShare's helper points the names of your projects at this Mac: it needs installing, or its update.`;
-  }
+  if (unnamed.length === 0) return;
+  const names = `${unnamed.join(', ')} ${unnamed.length > 1 ? 'do' : 'does'} not lead to this Mac yet, so Open uses localhost.`;
+  $('names-text').textContent = names;
+  $('names-fix').textContent = 'Point it now';
+  namesFix = 'point';
+  invoke('computer').then((computer) => {
+    if ($('names-note').hidden) return;
+    if (computer.helper === 'absent') {
+      $('names-text').textContent = `${names} DevShare's helper does that, and it is not installed.`;
+      $('names-fix').textContent = 'Install the helper';
+      namesFix = 'install';
+    } else if (computer.names) {
+      $('names-text').textContent = `${names} ${computer.names}`;
+      $('names-fix').textContent = 'Update the helper';
+      namesFix = 'install';
+    }
+  }).catch(() => {});
 }
 
 $('names-fix').addEventListener('click', async () => {
   const button = $('names-fix');
+  const label = button.textContent;
   button.disabled = true;
-  button.textContent = 'Updating…';
+  button.textContent = namesFix === 'install' ? 'Installing…' : 'Pointing…';
   try {
-    await invoke('install_helper');
-    // The names reach /etc/hosts in the background: asked again shortly.
-    setTimeout(() => { const project = currentProject(); if (project) checkProject(project); }, 1500);
+    await invoke(namesFix === 'install' ? 'install_helper' : 'point_names');
+    // Done: the addresses are asked again, by their names this time.
+    $('names-note').hidden = true;
+    const project = currentProject();
+    if (project) await checkProject(project);
   } catch (error) {
     $('names-text').textContent = String(error);
+    // Pointing failed: what is left is the helper itself.
+    button.textContent = namesFix === 'point' ? 'Update the helper' : label;
+    namesFix = 'install';
+    button.disabled = false;
+    return;
   }
   button.disabled = false;
-  button.textContent = 'Update the helper';
 });
 
 // HTTPS this Mac's browsers refuse: the project's own certificate, usually

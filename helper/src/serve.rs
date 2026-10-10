@@ -114,6 +114,8 @@ fn serve(mut stream: UnixStream, options: &Options, active: &Active) {
 
     let mut session: Option<Session> = None;
     // Whether this connection pointed this machine's own names at itself.
+    // This connection among the others that name projects.
+    let connection = NEXT_CONNECTION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut local = false;
     // Until the guest is gone, however it went.
     while let Ok(request) = helper::read::<Request>(&mut stream, MAX_MESSAGE) {
@@ -162,7 +164,7 @@ fn serve(mut stream: UnixStream, options: &Options, active: &Active) {
                 send(&mut stream, &Reply::Outcome(outcome), None)
             }
             Request::Local { names } => {
-                let outcome = match set_local(&names, &options.trusted_domains) {
+                let outcome = match set_local(connection, &names, &options.trusted_domains) {
                     Ok(()) => {
                         local = !names.is_empty();
                         Outcome::Local {}
@@ -188,15 +190,39 @@ fn serve(mut stream: UnixStream, options: &Options, active: &Active) {
     }
     take_down(uid, &mut session, active);
     if local {
-        if let Err(error) = system_dns::set_local(&[]) {
+        if let Err(error) = write_local(connection, None) {
             tracing::error!("could not remove this machine's names: {error}");
         }
     }
 }
 
+static NEXT_CONNECTION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The names each connection asked for. What is written is all of them
+/// together: one program leaving takes its own names away, not another's.
+static LOCAL_NAMES: std::sync::Mutex<Vec<(u64, Vec<String>)>> = std::sync::Mutex::new(Vec::new());
+
+/// Sets (or, with `None`, forgets) a connection's names and writes the
+/// names of all connections.
+fn write_local(connection: u64, names: Option<&[String]>) -> Result<()> {
+    let mut all = LOCAL_NAMES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    all.retain(|(known, _)| *known != connection);
+    if let Some(names) = names.filter(|names| !names.is_empty()) {
+        all.push((connection, names.to_vec()));
+    }
+    let mut together: Vec<String> = all.iter().flat_map(|(_, names)| names.clone()).collect();
+    together.sort();
+    together.dedup();
+    system_dns::set_local(&together).context("pointing the names at this machine")?;
+    tracing::info!("this machine's names: {}", together.join(", "));
+    Ok(())
+}
+
 /// Points this machine's own project names at itself, after the same check
 /// as a session's names: development names only, and not too many.
-fn set_local(names: &[String], trusted_domains: &Path) -> Result<()> {
+fn set_local(connection: u64, names: &[String], trusted_domains: &Path) -> Result<()> {
     if names.len() > MAX_NAMES {
         bail!("at most {MAX_NAMES} names, not {}", names.len());
     }
@@ -213,9 +239,7 @@ fn set_local(names: &[String], trusted_domains: &Path) -> Result<()> {
             devshare_protocol::clean(name, 80)
         );
     }
-    system_dns::set_local(names).context("pointing the names at this machine")?;
-    tracing::info!("this machine's names: {}", names.join(", "));
-    Ok(())
+    write_local(connection, Some(names))
 }
 
 /// Creates the interface and installs the names, after checking everything

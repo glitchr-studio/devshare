@@ -52,6 +52,11 @@ fn the_window_finds_projects_edits_the_settings_and_starts_nothing_it_cannot() {
         std::env::set_var("HOME", &home);
         std::env::set_var("DEVSHARE_SETTINGS", &settings);
         std::env::set_var("DEVSHARE_APP_DATA", home.join("app"));
+        // Never the helper of the machine the tests run on.
+        std::env::set_var(
+            "DEVSHARE_HELPER_SOCKET",
+            "/nonexistent/devshare-helper.sock",
+        );
     }
 
     let app = commands::create(mock_builder());

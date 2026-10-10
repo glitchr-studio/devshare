@@ -35,8 +35,15 @@ pub struct Helper {
 
 impl Helper {
     /// The helper, when it is installed. `None` when it is not.
+    ///
+    /// `DEVSHARE_HELPER_SOCKET` names another socket: the tests name one
+    /// that does not exist, and never reach the helper of the machine they
+    /// run on.
     pub fn connect() -> Result<Option<Self>> {
-        Self::connect_to(Path::new(SOCKET))
+        match std::env::var_os("DEVSHARE_HELPER_SOCKET") {
+            Some(socket) => Self::connect_to(Path::new(&socket)),
+            None => Self::connect_to(Path::new(SOCKET)),
+        }
     }
 
     pub fn connect_to(socket: &Path) -> Result<Option<Self>> {
