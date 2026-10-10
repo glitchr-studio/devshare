@@ -177,6 +177,34 @@ fn an_override_file_adds_its_ports_and_profiles_decide_what_starts() {
 }
 
 #[test]
+fn a_service_on_internal_networks_only_publishes_nothing() {
+    let folder = project("internal");
+    // MinIO on the internal network only, its console published all the
+    // same: Docker publishes none of it. The proxy, also on a network that
+    // is not internal, is published.
+    std::fs::write(
+        folder.join("docker-compose.override.yml"),
+        "services:\n  storage:\n    image: minio/minio\n    networks: [intranet]\n    ports:\n      - \"9010:9000\"\n  edge:\n    image: nginx:alpine\n    networks:\n      intranet: {}\n      extranet: {}\n    ports:\n      - \"8740:80\"\nnetworks:\n  intranet:\n    internal: true\n  extranet: {}\n",
+    )
+    .unwrap();
+
+    let found = discover(&folder, &Options::default()).unwrap();
+    let shared: Vec<Option<u16>> = found.shared().map(|port| port.host).collect();
+    assert!(shared.contains(&Some(8740)), "{shared:?}");
+    assert!(!shared.contains(&Some(9010)), "{shared:?}");
+    let storage = found
+        .left_out()
+        .find(|port| port.host == Some(9010))
+        .unwrap();
+    assert_eq!(
+        storage.left_out.as_deref(),
+        Some("only on internal networks: Docker publishes none of its ports")
+    );
+
+    std::fs::remove_dir_all(&folder).ok();
+}
+
+#[test]
 fn a_file_written_by_hand_is_kept_and_a_generated_one_is_refreshed() {
     let folder = project("write");
     let found = discover(&folder, &Options::default()).unwrap();

@@ -100,13 +100,6 @@
       <div class="page">
         <p id="project-problem" class="error" hidden></p>
         <section>
-          <h2>Preview</h2>
-          <div id="preview-wrap" class="preview" hidden>
-            <iframe id="preview" title="Preview" sandbox="allow-scripts allow-same-origin allow-forms" referrerpolicy="no-referrer"></iframe>
-          </div>
-          <p id="preview-note" class="muted small"></p>
-        </section>
-        <section>
           <h2 class="with-action">Addresses <button id="check-again" type="button" class="link">Check again</button></h2>
           <ul id="project-addresses" class="addresses"></ul>
           <p class="muted small">Asked by their names, as guests will.</p>
@@ -137,6 +130,14 @@
             <button id="project-reveal" type="button" class="small">Reveal in Finder</button>
             <button id="project-remove" type="button" class="small">Take off the list</button>
           </p>
+        </section>
+        <!-- Last, and only when one of its addresses shows a page. -->
+        <section id="preview-section" hidden>
+          <h2>Preview</h2>
+          <div id="preview-wrap" class="preview">
+            <iframe id="preview" title="Preview" sandbox="allow-scripts allow-same-origin allow-forms" referrerpolicy="no-referrer"></iframe>
+          </div>
+          <p id="preview-note" class="muted small"></p>
         </section>
       </div>
     </main>

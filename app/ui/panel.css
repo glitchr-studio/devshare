@@ -100,3 +100,4 @@ input.switch.busy { animation: pulse 1s ease-in-out infinite alternate; }
 
 /* Partly running: on, in amber. */
 input.switch.partial:checked { background: var(--attention); }
+.card button.site { padding: 5px; }

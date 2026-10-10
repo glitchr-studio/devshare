@@ -353,6 +353,35 @@ fn open_local(url: String) -> Result<(), String> {
     tauri_plugin_opener::open_url(&url, None::<&str>).map_err(|error| error.to_string())
 }
 
+/// Opens a project's site in the browser: its entry point, by its name when
+/// this Mac points the name at itself, else on localhost.
+#[tauri::command]
+async fn open_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<(), String> {
+    let projects = projects(&app)?;
+    let url = tauri::async_runtime::spawn_blocking(move || {
+        let settings = Settings::load().unwrap_or_default();
+        let listing = projects.list(&settings, &discovery_options());
+        let project = listing
+            .projects
+            .into_iter()
+            .find(|project| project.folder == path)
+            .ok_or("this project is not on the list")?;
+        let preview = project
+            .preview
+            .ok_or("this project has no web address to open")?;
+        let mut url = url::Url::parse(&preview).map_err(|error| error.to_string())?;
+        if let Some(name) = project.hostname {
+            if loopback_names().contains(&name.to_ascii_lowercase()) {
+                url.set_host(Some(&name)).map_err(|error| error.to_string())?;
+            }
+        }
+        Ok::<_, String>(url.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    tauri_plugin_opener::open_url(&url, None::<&str>).map_err(|error| error.to_string())
+}
+
 /// Shows a project's folder in the Finder (or the file manager).
 #[tauri::command]
 fn reveal(path: String) -> Result<(), String> {
@@ -693,8 +722,11 @@ async fn check(
                 426 => format!("{code} {reason}: a WebSocket port, not a page"),
                 _ => format!("{code} {reason}").trim().to_string(),
             };
-            // A WebSocket server answering as it should is not an error.
+            // The port's own answer gives the colour: a redirect is fine
+            // wherever it leads (the address there has its own row), a
+            // WebSocket server answering as it should is not an error.
             let state = match code {
+                _ if redirected.is_some() => "ok",
                 426 => "open",
                 ..=399 => "ok",
                 400..=499 => "warn",
@@ -731,9 +763,23 @@ struct Certified {
 /// The files it replaces are kept with the app's data.
 #[tauri::command]
 async fn certify_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<Certified, String> {
-    use devshare_core::{ca, probe};
     let _busy = crate::native::busy(&app);
-    let path = PathBuf::from(path);
+    certify(&app, PathBuf::from(path), false)
+        .await?
+        .ok_or_else(|| "nothing to certify".to_string())
+}
+
+/// Certifies a project with this Mac's authority: its certificate files are
+/// replaced with ones issued for its names and localhost. `when_needed`, as
+/// before each start: nothing is done, and nothing said, when there is no
+/// trusted authority, no certificate file, or one it already issued for
+/// these names with time left.
+async fn certify<R: Runtime>(
+    app: &AppHandle<R>,
+    path: PathBuf,
+    when_needed: bool,
+) -> Result<Option<Certified>, String> {
+    use devshare_core::{ca, probe};
     let folder = folder_of(&path);
     let options = discovery_options();
     let lookup = path.clone();
@@ -764,18 +810,22 @@ async fn certify_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<
     }
     let settings = Settings::load().unwrap_or_default();
     let domains = vec![settings.domain()];
-    let data = projects(&app)?;
+    let data = projects(app)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let found =
-            ca::find_project_certificate(&folder, served.as_deref(), &names).ok_or_else(|| {
-                "its certificate files were not found in its folder: DevShare looks for the one it \
+        let found = ca::find_project_certificate(&folder, served.as_deref(), &names);
+        let authority = ca::DeviceCa::load(&domains).ok().flatten();
+        let trusted = authority.as_ref().is_some_and(|authority| authority.trusted());
+        if when_needed && (found.is_none() || !trusted) {
+            return Ok(None);
+        }
+        let found = found.ok_or_else(|| {
+            "its certificate files were not found in its folder: DevShare looks for the one it \
              serves, with its key beside it"
-                    .to_string()
-            })?;
-        let authority = ca::DeviceCa::load(&domains)
-            .map_err(|error| format!("{error:#}"))?
+                .to_string()
+        })?;
+        let authority = authority
             .ok_or("this Mac has no DevShare authority yet: install it in the settings")?;
-        if !authority.trusted() {
+        if !trusted {
             return Err(
                 "this Mac does not trust its DevShare authority yet: install it in the settings"
                     .into(),
@@ -789,6 +839,12 @@ async fn certify_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<
             let name = devshare_core::protocol::normalize_host(name);
             if authority.covers(&name) && !certified.contains(&name) {
                 certified.push(name);
+            }
+        }
+        if when_needed {
+            let current = std::fs::read_to_string(&found.certificate).unwrap_or_default();
+            if authority.vouches_for(&current, &certified) {
+                return Ok(None);
             }
         }
         let (pem, key) = authority
@@ -808,13 +864,13 @@ async fn certify_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<
                 .output()
                 .is_ok_and(|output| output.status.success())
         });
-        Ok(Certified {
+        Ok(Some(Certified {
             certificate: found.certificate.display().to_string(),
             key: found.key.display().to_string(),
             names: certified,
             kept: kept.display().to_string(),
             tracked,
-        })
+        }))
     })
     .await
     .map_err(|error| error.to_string())?
@@ -884,6 +940,15 @@ async fn run_project<R: Runtime>(
         "DevShare does not know how to start this project: give it a start command in its details",
     )?;
     let _busy = crate::native::busy(&app);
+    // Valid by default: its certificate is this Mac's before it starts, so
+    // that its HTTPS opens without a warning, by its names and localhost.
+    if action == "up" {
+        match certify(&app, path.clone(), true).await {
+            Ok(Some(done)) => tracing::info!("certified {} before starting it", done.certificate),
+            Ok(None) => {}
+            Err(error) => tracing::warn!("not certified before starting: {error}"),
+        }
+    }
     crate::system::run_in(&folder, &command).await
 }
 /// The general settings as they are written, and the defaults that apply
@@ -1232,6 +1297,7 @@ pub fn create<R: Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
             restore_project,
             set_commands,
             open_local,
+            open_project,
             reveal,
             hide_panel,
             show_window,

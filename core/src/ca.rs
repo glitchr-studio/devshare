@@ -373,6 +373,55 @@ impl DeviceCa {
         Ok((certificate.pem(), key.serialize_pem()))
     }
 
+    /// Whether a certificate (PEM) is one it issued, for every one of
+    /// `names`, with a month left at least: nothing to certify again.
+    pub fn vouches_for(&self, pem: &str, names: &[String]) -> bool {
+        let Ok((_, block)) = x509_parser::pem::parse_x509_pem(pem.as_bytes()) else {
+            return false;
+        };
+        let Ok((_, parsed)) = x509_parser::parse_x509_certificate(&block.contents) else {
+            return false;
+        };
+        let issuer = parsed
+            .issuer()
+            .iter_common_name()
+            .next()
+            .and_then(|name| name.as_str().ok());
+        if issuer != Some(self.common_name()) {
+            return false;
+        }
+        let month = 30 * 24 * 3600;
+        let now = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs() as i64)
+            .unwrap_or_default();
+        if parsed.validity().not_after.timestamp() < now + month {
+            return false;
+        }
+        let covered: Vec<String> = parsed
+            .subject_alternative_name()
+            .ok()
+            .flatten()
+            .map(|names| {
+                names
+                    .value
+                    .general_names
+                    .iter()
+                    .filter_map(|name| match name {
+                        x509_parser::extensions::GeneralName::DNSName(name) => {
+                            Some(normalize_host(name))
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        names
+            .iter()
+            .map(|name| normalize_host(name))
+            .all(|name| covered.contains(&name))
+    }
+
     /// Whether its constraints let it vouch for `name`.
     pub fn covers(&self, name: &str) -> bool {
         let name = normalize_host(name);
@@ -918,6 +967,16 @@ mod tests {
         // Outside its constraints: refused, not issued.
         assert!(ca.issue(&names(&["shop.com"]), 30).is_err());
         assert!(ca.issue(&names(&["127.0.0.1"]), 30).is_err());
+
+        // Its own, for these names, with time left: nothing to do again.
+        assert!(ca.vouches_for(&pem, &names(&["shop.local", "localhost"])));
+        // A name it lacks, a month left at most, another authority's: again.
+        assert!(!ca.vouches_for(&pem, &names(&["shop.local", "admin.shop.local"])));
+        let (short, _) = ca.issue(&names(&["shop.local"]), 20).unwrap();
+        assert!(!ca.vouches_for(&short, &names(&["shop.local"])));
+        let other = DeviceCa::generate(&names(&["local"])).unwrap();
+        assert!(!other.vouches_for(&pem, &names(&["shop.local"])));
+        assert!(!ca.vouches_for("not a certificate", &names(&["shop.local"])));
     }
 
     fn rustls_pemfile_der(pem: &str) -> CertificateDer<'static> {

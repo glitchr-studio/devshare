@@ -60,15 +60,30 @@ function card(project) {
     element('strong', { textContent: project.name }),
     element('span', { textContent: project.hostname ?? '', className: project.hostname ? '' : 'sub' }),
   ]);
-  // The name opens the project's page in the window.
-  who.addEventListener('click', () => open(`project:${project.folder}`));
-  const row = element('li', { className: 'card' }, [dot, who, toggle]);
+  // The site, in the browser: the button, or a double click on the card.
+  const site = element('button', { type: 'button', className: 'tool site', title: 'Open the site', ariaLabel: 'Open the site' });
+  site.innerHTML = '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M6.5 3.5H3.5v9h9v-3M9 2.5h4.5V7M13.5 2.5 7.5 8.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  site.addEventListener('click', () => openSite(project));
+  // One click on the name opens its page in the window, unless a second
+  // click follows: then the site opens.
+  let clicked = null;
+  who.addEventListener('click', () => {
+    clearTimeout(clicked);
+    clicked = setTimeout(() => open(`project:${project.folder}`), 260);
+  });
+  const row = element('li', { className: 'card' }, [dot, who, site, toggle]);
+  row.addEventListener('dblclick', (event) => {
+    if (event.target.closest('input, button')) return;
+    clearTimeout(clicked);
+    openSite(project);
+  });
   row.dataset.folder = project.folder;
   row.update = () => {
     const state = states.get(project.folder);
     const moving = pending.has(project.folder);
     dot.className = `dot ${project.problem || state === 'partial' ? 'warn' : state === 'running' ? 'on' : 'off'}`;
     dot.title = project.problem ?? { running: 'Running', partial: 'Partly running: not every port answers' }[state] ?? 'Not started';
+    site.hidden = !isUp(project) || !project.preview;
     toggle.checked = moving ? pending.get(project.folder) : isUp(project);
     toggle.disabled = moving || !project.startable || Boolean(project.problem);
     toggle.classList.toggle('busy', moving);
@@ -77,6 +92,15 @@ function card(project) {
   };
   row.update();
   return row;
+}
+
+async function openSite(project) {
+  try {
+    await invoke('open_project', { path: project.folder });
+    await invoke('hide_panel');
+  } catch (error) {
+    say(error);
+  }
 }
 
 async function toggleRunning(project, on) {

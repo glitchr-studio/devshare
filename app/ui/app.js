@@ -251,6 +251,8 @@ function renderProject(project) {
       ])));
     $('certify-section').hidden = true;
     $('names-note').hidden = true;
+    $('preview-section').hidden = true;
+    $('preview').removeAttribute('src');
   }
   if (!known || Date.now() - known.at > 5000) checkProject(project);
   const form = $('project-commands').elements;
@@ -301,9 +303,12 @@ async function checkProject(project) {
 function showChecks(project, checks) {
   // One row per port: the names that share it said together, when they
   // got the same answer.
+  // Answers that differ by the name only ("redirects to https://www.shop.local/"
+  // and "…https://shop.local/") are the same answer.
   const rows = [];
+  const unnamed = (check) => check.detail.split(check.host).join('·');
   for (const check of checks) {
-    const same = rows.find((row) => row.port === check.port && row.detail === check.detail && row.state === check.state);
+    const same = rows.find((row) => row.port === check.port && row.state === check.state && unnamed(row) === unnamed(check));
     if (same) same.hosts.push(check.host);
     else rows.push({ ...check, hosts: [check.host] });
   }
@@ -421,29 +426,16 @@ function preview(project, checks) {
   const port = project.preview ? Number(new URL(project.preview).port || (project.preview.startsWith('https') ? 443 : 80)) : null;
   const pages = checks.filter((check) => check.page);
   const page = pages.find((check) => check.port === port) ?? pages[0];
-  if (page) {
-    if ($('preview').getAttribute('src') !== page.url) $('preview').src = page.url;
-    $('preview-wrap').hidden = false;
-    $('preview-note').className = 'muted small';
-    $('preview-note').textContent = page.tls
-      ? `${page.url} — if it stays blank, this Mac does not trust the project's certificate: Open it in the browser.`
-      : page.url;
+  // No page: no box. What each address answered is said under it.
+  $('preview-section').hidden = !page;
+  if (!page) {
+    $('preview').removeAttribute('src');
     return;
   }
-  $('preview').removeAttribute('src');
-  $('preview-wrap').hidden = true;
-  // What each address answered is said under it: here, only that there
-  // is nothing to show, and why in a word.
-  $('preview-note').className = 'muted small';
-  if (checks.length === 0) {
-    $('preview-note').textContent = 'Nothing to preview: the project shares no address.';
-  } else if (checks.every((check) => check.state === 'down' || check.state === 'taken')) {
-    $('preview-note').textContent = project.startable
-      ? 'Nothing answers: the project is not started. Start it to see it here.'
-      : 'Nothing answers: start the project the way you usually do.';
-  } else {
-    $('preview-note').textContent = 'No address shows a page yet: see what each one answers below.';
-  }
+  if ($('preview').getAttribute('src') !== page.url) $('preview').src = page.url;
+  $('preview-note').textContent = page.tls && page.trusted === false
+    ? `${page.url} — this Mac does not trust its certificate yet: Certify it above, or Open it in the browser.`
+    : page.url;
 }
 
 function currentProject() {

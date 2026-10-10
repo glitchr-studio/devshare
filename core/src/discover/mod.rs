@@ -384,6 +384,27 @@ pub fn discover(directory: &Path, options: &Options) -> Result<Discovery> {
     // A later file adds its ports to those of an earlier one and replaces
     // the rest, as Compose merges them.
     let mut services: Vec<(String, Service)> = Vec::new();
+    // The networks declared `internal: true`: Docker publishes no port of a
+    // service that is on those only.
+    let mut internal: Vec<String> = Vec::new();
+    for document in &documents {
+        if let Some(networks) = document.get("networks").and_then(Value::as_mapping) {
+            for (name, definition) in networks {
+                let Some(name) = name.as_str() else { continue };
+                let definition = interpolated(definition, &variables);
+                let flag = definition.get("internal");
+                let is = matches!(flag, Some(Value::Bool(true)))
+                    || matches!(flag.and_then(Value::as_str), Some("true"));
+                let isnt = matches!(flag, Some(Value::Bool(false)))
+                    || matches!(flag.and_then(Value::as_str), Some("false"));
+                if is && !internal.iter().any(|known| known == name) {
+                    internal.push(name.to_string());
+                } else if isnt {
+                    internal.retain(|known| known != name);
+                }
+            }
+        }
+    }
     for document in &documents {
         let Some(declared) = document.get("services").and_then(Value::as_mapping) else {
             continue;
@@ -433,6 +454,12 @@ pub fn discover(directory: &Path, options: &Options) -> Result<Discovery> {
         let asked = service.profiles.iter().any(|p| profiles.contains(p));
         let inactive =
             (!service.profiles.is_empty() && !asked).then(|| service.profiles.join(", "));
+        let unpublished = !service.host_network
+            && !service.networks.is_empty()
+            && service
+                .networks
+                .iter()
+                .all(|network| internal.contains(network));
         for declared in &service.ports {
             for mut port in
                 ports(name, declared).with_context(|| format!("the ports of the service {name}"))?
@@ -440,6 +467,9 @@ pub fn discover(directory: &Path, options: &Options) -> Result<Discovery> {
                 port.left_out = match (&inactive, &port) {
                     (_, Published { left_out: Some(reason), .. }) => Some(reason.clone()),
                     (Some(profile), _) => Some(format!("only started with the profile {profile}")),
+                    _ if unpublished => Some(
+                        "only on internal networks: Docker publishes none of its ports".into(),
+                    ),
                     (_, Published { udp: true, .. }) => Some("UDP is not shared yet".into()),
                     (_, Published { host: None, .. }) => Some(
                         "Docker picks its port on the host when the service starts: pin one to share it"
@@ -826,6 +856,8 @@ struct Service {
     ports: Vec<Value>,
     profiles: Vec<String>,
     host_network: bool,
+    /// The networks it is on; none named means the project's default one.
+    networks: Vec<String>,
     labels: Vec<(String, String)>,
     /// The files and folders of the machine mounted into it.
     mounted: Vec<String>,
@@ -853,6 +885,22 @@ impl Service {
         }
         if let Some(mode) = definition.get("network_mode").and_then(Value::as_str) {
             self.host_network = mode == "host";
+        }
+        let networks: Vec<String> = match definition.get("networks") {
+            Some(Value::Sequence(names)) => names
+                .iter()
+                .filter_map(|name| name.as_str().map(str::to_string))
+                .collect(),
+            Some(Value::Mapping(names)) => names
+                .keys()
+                .filter_map(|name| name.as_str().map(str::to_string))
+                .collect(),
+            _ => Vec::new(),
+        };
+        for network in networks {
+            if !self.networks.contains(&network) {
+                self.networks.push(network);
+            }
         }
         match definition.get("labels") {
             Some(Value::Mapping(labels)) => {
