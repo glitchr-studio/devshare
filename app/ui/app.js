@@ -122,19 +122,67 @@ function home(folder) {
   return folder.replace(/^\/Users\/[^/]+/, '~').replace(/^\/home\/[^/]+/, '~');
 }
 
+// The switches start and stop a project: what they show is whether it runs
+// (all its ports or some answer), whoever started it. Sharing is never
+// theirs: only a Share button shares.
+const pending = new Map(); // folder → the position it is being moved to
+
+function isUp(project) {
+  const state = states.get(project.folder);
+  return state === 'running' || state === 'partial';
+}
+
 function switchFor(project) {
-  const toggle = element('input', { type: 'checkbox', className: 'switch', checked: project.on, disabled: Boolean(project.problem) });
-  toggle.title = project.on ? 'Shared when you press Share' : 'Not shared';
-  toggle.addEventListener('change', async () => {
-    project.on = toggle.checked;
-    for (const other of document.querySelectorAll(`input.switch[data-folder="${CSS.escape(project.folder)}"]`)) {
-      other.checked = project.on;
-    }
-    chosen();
-    await invoke('switch', { path: project.folder, on: toggle.checked }).catch((error) => { $('error').textContent = String(error); });
-  });
+  const toggle = element('input', { type: 'checkbox', className: 'switch' });
   toggle.dataset.folder = project.folder;
+  toggle.addEventListener('change', () => toggleRunning(project, toggle.checked));
+  setSwitch(toggle, project);
   return toggle;
+}
+
+function setSwitch(toggle, project) {
+  const moving = pending.has(project.folder);
+  toggle.checked = moving ? pending.get(project.folder) : isUp(project);
+  toggle.disabled = moving || !project.startable || Boolean(project.problem);
+  toggle.classList.toggle('busy', moving);
+  toggle.title = project.problem
+    ? project.problem
+    : !project.startable
+      ? 'DevShare does not know how to start it: start it as you usually do, or give it a start command on its page'
+      : isUp(project) ? 'Running: switch off to stop it' : 'Stopped: switch on to start it';
+}
+
+function syncSwitches(project) {
+  for (const toggle of document.querySelectorAll(`input.switch[data-folder="${CSS.escape(project.folder)}"]`)) setSwitch(toggle, project);
+  if (project.folder === selected) projectState(project);
+}
+
+// Starts or stops a project its own way (make up, docker compose up -d…).
+async function toggleRunning(project, on) {
+  if (pending.has(project.folder) || !project.startable) return;
+  pending.set(project.folder, on);
+  syncSwitches(project);
+  // Remembered: the names of the projects switched on point at this Mac.
+  project.on = on;
+  invoke('switch', { path: project.folder, on }).catch(() => {});
+  let failed = null;
+  try {
+    await invoke('run_project', { path: project.folder, action: on ? 'up' : 'down' });
+  } catch (error) {
+    failed = String(error);
+  }
+  pending.delete(project.folder);
+  await refreshRunning();
+  syncSwitches(project);
+  if (failed) {
+    if (project.folder === selected) {
+      $('project-problem').hidden = false;
+      $('project-problem').textContent = failed;
+    } else {
+      $('error').textContent = `${project.name}: ${failed}`;
+    }
+  }
+  if (project.folder === selected) checkProject(project);
 }
 
 function projectRow(project) {
@@ -172,8 +220,8 @@ async function refreshRunning() {
   const found = await invoke('running', { paths: folders }).catch(() => []);
   states = new Map(found.map((one) => [one.path, one.state]));
   for (const row of $('projects').children) row.running(states.get(row.dataset.folder));
-  const current = listed.find((project) => project.folder === selected);
-  if (current && page === 'project') projectState(current);
+  for (const project of listed) syncSwitches(project);
+  chosen();
 }
 setInterval(() => { if (!document.hidden) refreshRunning(); }, 8000);
 
@@ -182,9 +230,8 @@ setInterval(() => { if (!document.hidden) refreshRunning(); }, 8000);
 function renderProject(project) {
   $('project-name').textContent = project.name;
   $('project-host').textContent = project.hostname ?? '';
-  $('project-switch').checked = project.on;
-  $('project-switch').disabled = Boolean(project.problem);
   $('project-switch').dataset.folder = project.folder;
+  setSwitch($('project-switch'), project);
   $('project-problem').hidden = !project.problem;
   $('project-problem').textContent = project.problem ?? '';
   $('project-folder').textContent = home(project.folder);
@@ -206,12 +253,12 @@ function renderProject(project) {
 
 function projectState(project) {
   $('project-share-now').textContent = sharingNow ? 'Show invitation' : 'Share now';
-  $('project-share-now').disabled = Boolean(project.problem) && !sharingNow;
+  $('project-share-now').disabled = !sharingNow && (Boolean(project.problem) || !isUp(project));
+  $('project-share-now').title = sharingNow || isUp(project) ? '' : 'Start it first: switch it on';
   const state = states.get(project.folder) ?? 'stopped';
-  $('project-state').textContent = project.problem ? '' : STATE_WORDS[state].split(':')[0];
-  $('project-state').className = state === 'running' ? 'state on' : state === 'partial' ? 'state partial' : 'state';
-  $('project-start').hidden = state === 'running' || !project.startable || Boolean(project.problem);
-  $('project-stop').hidden = state === 'stopped' || !project.startable;
+  const moving = pending.has(project.folder);
+  $('project-state').textContent = project.problem ? '' : moving ? (pending.get(project.folder) ? 'Starting…' : 'Stopping…') : STATE_WORDS[state].split(':')[0];
+  $('project-state').className = moving ? 'state' : state === 'running' ? 'state on' : state === 'partial' ? 'state partial' : 'state';
 }
 
 // Every address of the project, asked as a guest would; the preview shows
@@ -311,8 +358,8 @@ $('certify-restart').addEventListener('click', async () => {
   const project = currentProject();
   if (!project) return;
   $('certify-restart').hidden = true;
-  await runProject(project, 'down', $('project-stop'));
-  await runProject(project, 'up', $('project-start'));
+  await toggleRunning(project, false);
+  await toggleRunning(project, true);
 });
 
 function preview(project, checks) {
@@ -348,33 +395,20 @@ function currentProject() {
   return listed.find((project) => project.folder === selected);
 }
 
-$('project-switch').addEventListener('change', async (event) => {
+$('project-switch').addEventListener('change', (event) => {
   const project = currentProject();
-  if (!project) return;
-  project.on = event.target.checked;
-  for (const other of document.querySelectorAll(`#projects input.switch[data-folder="${CSS.escape(project.folder)}"]`)) other.checked = project.on;
-  chosen();
-  await invoke('switch', { path: project.folder, on: project.on }).catch((error) => { $('project-problem').hidden = false; $('project-problem').textContent = String(error); });
+  if (project) toggleRunning(project, event.target.checked);
 });
-$('project-start').addEventListener('click', () => { const project = currentProject(); if (project) runProject(project, 'up', $('project-start')); });
-$('project-stop').addEventListener('click', () => { const project = currentProject(); if (project) runProject(project, 'down', $('project-stop')); });
 $('project-reveal').addEventListener('click', () => { if (selected) invoke('reveal', { path: selected }).catch(() => {}); });
-$('project-share-alone').addEventListener('click', () => { if (selected) share([selected], $('project-share-alone')); });
-// Share now: this project with the others switched on, switched on itself.
-$('project-share-now').addEventListener('click', async () => {
+// Share now: this project, alone, on demand.
+$('project-share-now').addEventListener('click', () => {
   const project = currentProject();
   if (!project) return;
   if (sharingNow) {
     show('share');
     return;
   }
-  if (!project.on) {
-    project.on = true;
-    $('project-switch').checked = true;
-    for (const other of document.querySelectorAll(`#projects input.switch[data-folder="${CSS.escape(project.folder)}"]`)) other.checked = true;
-    await invoke('switch', { path: project.folder, on: true }).catch(() => {});
-  }
-  share(chosen(), $('project-share-now'));
+  share([project.folder], $('project-share-now'));
 });
 $('dock-share').addEventListener('click', () => {
   if (sharingNow) {
@@ -407,23 +441,6 @@ $('project-commands').addEventListener('submit', async (event) => {
   }
 });
 
-// Starts or stops a project its own way (make up, docker compose up -d).
-async function runProject(project, action, button) {
-  const label = button.textContent;
-  button.disabled = true;
-  button.textContent = action === 'up' ? 'Starting…' : 'Stopping…';
-  $('project-problem').hidden = true;
-  try {
-    await invoke('run_project', { path: project.folder, action });
-  } catch (error) {
-    $('project-problem').hidden = false;
-    $('project-problem').textContent = String(error);
-  }
-  button.disabled = false;
-  button.textContent = label;
-  await refreshRunning();
-  checkProject(project);
-}
 
 // ----------------------------------------------------------- not listed
 
@@ -496,11 +513,11 @@ listen('tauri://drag-drop', (event) => add(event.payload.paths[0]));
 
 // ------------------------------------------------------------- sharing
 
+// What the Share buttons share: the projects running now.
 function chosen() {
-  const on = listed.filter((project) => project.on && !project.problem);
-  $('share').disabled = on.length === 0 || joining;
-  $('share').textContent = on.length > 1 ? `Share ${on.length} projects` : 'Share';
-  // The dock: Share what is switched on, or show the invitation.
+  const running = listed.filter((project) => isUp(project) && !project.problem);
+  $('share').disabled = running.length === 0 || joining;
+  $('share').textContent = running.length > 1 ? `Share ${running.length} running projects` : running.length ? `Share ${running[0].name}` : 'Share';
   const dock = $('dock-share');
   if (sharingNow) {
     dock.textContent = 'Sharing · Show invitation';
@@ -508,16 +525,16 @@ function chosen() {
     dock.disabled = false;
     $('dock-note').textContent = 'QR code and link on the invitation page';
   } else {
-    dock.textContent = on.length > 1 ? `Share ${on.length} projects` : on.length ? `Share ${on[0].name}` : 'Share';
+    dock.textContent = running.length > 1 ? `Share ${running.length} running projects` : running.length ? `Share ${running[0].name}` : 'Share';
     dock.className = 'primary';
-    dock.disabled = on.length === 0 || joining;
-    $('dock-note').textContent = on.length ? `${$('minutes').selectedOptions[0]?.textContent ?? ''}, up to ${$('limit').value} guests` : 'Switch on a project to share it';
+    dock.disabled = running.length === 0 || joining;
+    $('dock-note').textContent = running.length ? `${$('minutes').selectedOptions[0]?.textContent ?? ''}, up to ${$('limit').value} guests` : 'Start a project to share it';
   }
-  $('share-summary').textContent = on.length
-    ? `Switched on: ${on.map((project) => project.name).join(', ')}.`
-    : 'Switch on the projects to share, in the list at the left.';
-  $('nav-share-note').textContent = sharingNow ? 'Sharing' : joinedNow ? 'In a session' : on.length ? `${on.length} switched on` : '';
-  return on.map((project) => project.folder);
+  $('share-summary').textContent = running.length
+    ? `Running now: ${running.map((project) => project.name).join(', ')}.`
+    : 'No project is running: switch one on in the list at the left to start it.';
+  $('nav-share-note').textContent = sharingNow ? 'Sharing' : joinedNow ? 'In a session' : running.length ? `${running.length} running` : '';
+  return running.map((project) => project.folder);
 }
 
 async function share(paths, button) {

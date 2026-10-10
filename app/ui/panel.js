@@ -1,5 +1,5 @@
 // The panel of the menu bar icon. It asks the same app as the window: the
-// projects, their switches, sharing and stopping; and it opens the window
+// projects, starting and stopping them, sharing; and it opens the window
 // for the rest.
 
 const { invoke } = window.__TAURI__.core;
@@ -40,19 +40,21 @@ async function refresh() {
   guests = overview.guests;
   $('empty').hidden = projects.length > 0;
   $('cards').replaceChildren(...projects.map(card));
-  running();
   bar();
   fit();
+  running();
 }
 
+// The switches start and stop the projects, as in the window; sharing is
+// only the Share button's.
+let states = new Map();
+const pending = new Map();
+
+const isUp = (project) => ['running', 'partial'].includes(states.get(project.folder));
+
 function card(project) {
-  const toggle = element('input', { type: 'checkbox', className: 'switch', checked: project.on, disabled: Boolean(project.problem) || Boolean(session) });
-  toggle.title = session ? 'What is shared does not change during a session' : project.on ? 'Shared when you press Share' : 'Not shared';
-  toggle.addEventListener('change', async () => {
-    project.on = toggle.checked;
-    bar();
-    await invoke('switch', { path: project.folder, on: toggle.checked }).catch(say);
-  });
+  const toggle = element('input', { type: 'checkbox', className: 'switch' });
+  toggle.addEventListener('change', () => toggleRunning(project, toggle.checked));
   const dot = element('span', { className: 'dot' });
   const who = element('span', { className: 'who' }, [
     element('strong', { textContent: project.name }),
@@ -62,23 +64,49 @@ function card(project) {
   who.addEventListener('click', () => open(`project:${project.folder}`));
   const row = element('li', { className: 'card' }, [dot, who, toggle]);
   row.dataset.folder = project.folder;
-  row.running = (state) => {
+  row.update = () => {
+    const state = states.get(project.folder);
+    const moving = pending.has(project.folder);
     dot.className = `dot ${project.problem || state === 'partial' ? 'warn' : state === 'running' ? 'on' : 'off'}`;
     dot.title = project.problem ?? { running: 'Running', partial: 'Partly running: not every port answers' }[state] ?? 'Not started';
+    toggle.checked = moving ? pending.get(project.folder) : isUp(project);
+    toggle.disabled = moving || !project.startable || Boolean(project.problem);
+    toggle.classList.toggle('busy', moving);
+    toggle.title = project.problem ?? (!project.startable ? 'No start command known: see its page' : isUp(project) ? 'Running: switch off to stop it' : 'Stopped: switch on to start it');
   };
+  row.update();
   return row;
+}
+
+async function toggleRunning(project, on) {
+  if (pending.has(project.folder)) return;
+  pending.set(project.folder, on);
+  update();
+  invoke('switch', { path: project.folder, on }).catch(() => {});
+  try {
+    await invoke('run_project', { path: project.folder, action: on ? 'up' : 'down' });
+  } catch (error) {
+    say(`${project.name}: ${error}`);
+  }
+  pending.delete(project.folder);
+  await running();
+}
+
+function update() {
+  for (const row of $('cards').children) row.update();
+  bar();
 }
 
 async function running() {
   const folders = projects.map((project) => project.folder);
   const found = await invoke('running', { paths: folders }).catch(() => []);
-  const states = new Map(found.map((one) => [one.path, one.state]));
-  for (const row of $('cards').children) row.running(states.get(row.dataset.folder));
+  states = new Map(found.map((one) => [one.path, one.state]));
+  update();
 }
 
 // The Share button and what is said next to it.
 function bar() {
-  const chosen = projects.filter((project) => project.on && !project.problem);
+  const chosen = projects.filter((project) => isUp(project) && !project.problem);
   if (session) {
     $('share').textContent = 'Stop sharing';
     $('share').className = 'primary stop';
@@ -87,10 +115,10 @@ function bar() {
     $('state').textContent = 'Sharing';
     $('state').className = 'state on';
   } else {
-    $('share').textContent = chosen.length > 1 ? `Share ${chosen.length} projects` : 'Share';
+    $('share').textContent = chosen.length > 1 ? `Share ${chosen.length} running projects` : chosen.length ? `Share ${chosen[0].name}` : 'Share';
     $('share').className = 'primary';
     $('share').disabled = chosen.length === 0;
-    $('left').textContent = chosen.length ? (minutes === 0 ? 'no time limit' : `${minutes} min`) : 'switch on a project';
+    $('left').textContent = chosen.length ? (minutes === 0 ? 'no time limit' : `${minutes} min`) : 'start a project to share it';
     $('state').textContent = '';
     $('state').className = 'state';
   }
@@ -103,7 +131,7 @@ $('share').addEventListener('click', async () => {
     if (session) {
       await invoke('stop');
     } else {
-      const paths = projects.filter((project) => project.on && !project.problem).map((project) => project.folder);
+      const paths = projects.filter((project) => isUp(project) && !project.problem).map((project) => project.folder);
       await invoke('share', { paths, minutes, guests });
     }
   } catch (error) {
@@ -138,7 +166,6 @@ listen('refresh', refresh);
 listen('changed', (event) => { if (event.payload !== LABEL) refresh(); });
 listen('session', (event) => {
   session = event.payload;
-  for (const row of $('cards').children) row.querySelector('input').disabled = true;
   bar();
 });
 listen('ended', () => {

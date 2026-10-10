@@ -294,3 +294,8 @@ h2.with-action .link { text-transform: none; letter-spacing: 0; font-weight: 400
 .addresses .address { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .addresses .address .name { overflow: hidden; text-overflow: ellipsis; }
 .addresses .address .said { font-size: 12px; }
+
+/* A switch on its way: the project is starting or stopping. */
+input.switch.busy { opacity: 0.6; animation: pulse 1s ease-in-out infinite alternate; }
+@keyframes pulse { from { opacity: 0.35; } to { opacity: 0.8; } }
+.shared-switch .state { margin-right: 2px; }
