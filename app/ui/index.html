@@ -93,6 +93,7 @@
     <main id="page-project" hidden>
       <header class="bar" data-tauri-drag-region>
         <h1><span id="project-name"></span> <span id="project-host" class="mono muted"></span></h1>
+        <button id="project-restart" type="button" class="small" hidden title="Stops it and starts it again, every part of it">Restart</button>
         <label class="shared-switch" title="Starts or stops the project"><span id="project-state" class="state"></span><input id="project-switch" type="checkbox" class="switch"></label>
         <button id="project-share-now" type="button" class="primary">Share now</button>
       </header>
@@ -109,6 +110,7 @@
           <h2 class="with-action">Addresses <button id="check-again" type="button" class="link">Check again</button></h2>
           <ul id="project-addresses" class="addresses"></ul>
           <p class="muted small">Asked by their names, as guests will.</p>
+          <p id="names-note" class="names-note small" hidden><span id="names-text"></span> <button id="names-fix" type="button" class="small">Update the helper</button></p>
         </section>
         <section id="certify-section" hidden>
           <h2>HTTPS</h2>

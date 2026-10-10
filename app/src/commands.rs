@@ -32,8 +32,8 @@ pub(crate) struct Sharing(Mutex<Option<Session>>);
 #[derive(Default)]
 struct Joining(Mutex<Option<Joined>>);
 
-/// The connection to the helper that keeps the names of the projects
-/// switched on pointed at this Mac, the names last sent, and why the last
+/// The connection to the helper that keeps the names of the listed projects
+/// pointed at this Mac, the names last sent, and why the last
 /// attempt failed if it did. Closed with the app: the helper then removes
 /// the names.
 #[derive(Default)]
@@ -43,8 +43,9 @@ pub(crate) struct LocalNames {
     trouble: Mutex<Option<String>>,
 }
 
-/// Points the names of the projects switched on at this Mac, through the
-/// helper, so that this Mac opens them by name too. In the background.
+/// Points the names of the listed projects at this Mac, through the helper,
+/// so that this Mac opens them by name too, running or not. In the
+/// background.
 pub fn sync_names<R: Runtime>(app: &AppHandle<R>) {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -57,7 +58,6 @@ pub fn sync_names<R: Runtime>(app: &AppHandle<R>) {
             .list(&settings, &discovery_options())
             .projects
             .iter()
-            .filter(|project| project.on)
             .flat_map(|project| project.names.clone())
             .filter(|name| name != "localhost" && policy.accepts(name))
             .collect();
@@ -375,8 +375,9 @@ fn restore_project<R: Runtime>(
     Ok(())
 }
 
-/// Whether a project runs: `running` when every port it announces answers,
-/// `partial` when only some do, `stopped` when none does.
+/// Whether a project runs: `running` when every port it announces is up,
+/// `partial` when only some are, `stopped` when none is. A Docker Compose
+/// project's ports are up when its own containers publish them.
 #[derive(Serialize)]
 struct Running {
     path: String,
@@ -449,12 +450,34 @@ fn listens(target: &str) -> bool {
         })
 }
 
+/// The port of a target on this machine, if it is on this machine.
+fn local_port(target: &str) -> Option<u16> {
+    let (host, port) = target.rsplit_once(':')?;
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "0.0.0.0")
+        .then(|| port.parse().ok())
+        .flatten()
+}
+
+/// Whether a project's target is up: for a Docker Compose project, published
+/// by one of its running containers (whoever else answers there); for the
+/// others, answering.
+fn up(target: &str, published: &Option<Vec<u16>>) -> bool {
+    match (published, local_port(target)) {
+        (Some(published), Some(port)) => published.contains(&port),
+        _ => listens(target),
+    }
+}
+
 fn state_of(path: &std::path::Path, options: &discover::Options) -> &'static str {
     let Some(config) = config_of(path, options) else {
         return "stopped";
     };
     let targets = targets(&config);
-    let answering = targets.iter().filter(|target| listens(target)).count();
+    let published = crate::owners::published(&folder_of(path));
+    let answering = targets
+        .iter()
+        .filter(|target| up(target, &published))
+        .count();
     match answering {
         0 => "stopped",
         count if count == targets.len() => "running",
@@ -470,9 +493,12 @@ struct AddressCheck {
     /// What to open in a browser here: the name when this machine's
     /// /etc/hosts gives it to the loopback, else the address dialled.
     url: String,
-    /// `ok` (a page), `open` (it answers, not as a web server), `error`
-    /// (an HTTP error, a redirect to nowhere, a certificate refused), `down`.
+    /// `ok` (2xx, 3xx), `warn` (4xx), `error` (5xx), `open` (it answers, not
+    /// as a web server: FastCGI, a WebSocket), `taken` (another program
+    /// answers there, not the project), `down`.
     state: &'static str,
+    /// Whether a page shows there in the end: what the preview shows.
+    page: bool,
     /// `200 OK`, `426 Upgrade Required`, `nothing answers`…
     detail: String,
     tls: bool,
@@ -485,10 +511,15 @@ struct AddressCheck {
 async fn check_project(path: String) -> Result<Vec<AddressCheck>, String> {
     let options = discovery_options();
     let path = PathBuf::from(path);
-    let config = tauri::async_runtime::spawn_blocking(move || config_of(&path, &options))
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or("this project cannot be read")?;
+    let (config, published) = tauri::async_runtime::spawn_blocking(move || {
+        (
+            config_of(&path, &options),
+            crate::owners::published(&folder_of(&path)),
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    let config = config.ok_or("this project cannot be read")?;
     let named = loopback_names();
     let mut checks = Vec::new();
     let mut seen = Vec::new();
@@ -510,8 +541,13 @@ async fn check_project(path: String) -> Result<Vec<AddressCheck>, String> {
             service.port,
             named.contains(&service.host),
         );
+        // Whether the project's own containers hold the port: None when
+        // only the port tells.
+        let ours = published.as_ref().and_then(|published| {
+            local_port(&target).map(|port| published.contains(&port))
+        });
         checks.push(tokio::spawn(async move {
-            check(host, port, target, named).await
+            check(host, port, target, named, ours).await
         }));
     }
     let mut done = Vec::new();
@@ -523,7 +559,13 @@ async fn check_project(path: String) -> Result<Vec<AddressCheck>, String> {
     Ok(done)
 }
 
-async fn check(host: String, port: u16, target: String, named: bool) -> AddressCheck {
+async fn check(
+    host: String,
+    port: u16,
+    target: String,
+    named: bool,
+    ours: Option<bool>,
+) -> AddressCheck {
     use devshare_core::probe::{probe, Probe};
     let probed = probe(&target, &host).await;
     let tls = matches!(probed, Probe::Tls { .. });
@@ -542,19 +584,27 @@ async fn check(host: String, port: u16, target: String, named: bool) -> AddressC
         dialled.replace("127.0.0.1", "localhost")
     };
     let url = format!("{scheme}://{shown}:{target_port}");
+    // Trusted by its name and by localhost alike: Open uses either.
     let trusted = if tls {
-        devshare_core::probe::trusted_by_system(&target, &host).await
+        let by_name = devshare_core::probe::trusted_by_system(&target, &host).await;
+        let by_localhost = if host == "localhost" {
+            by_name
+        } else {
+            devshare_core::probe::trusted_by_system(&target, "localhost").await
+        };
+        match (by_name, by_localhost) {
+            (Some(name), Some(localhost)) => Some(name && localhost),
+            (known, None) | (None, known) => known,
+        }
     } else {
         None
     };
-    let answer = |state: &'static str, detail: String| {
-        // A page the browsers refuse to show is not quite a page.
-        let (state, detail) = match (state, trusted) {
-            ("ok", Some(false)) => (
-                "error",
-                format!("{detail} · its certificate is not trusted by this Mac"),
-            ),
-            _ => (state, detail),
+    // The colour is the answer's (2xx and 3xx fine, 4xx a warning, 5xx an
+    // error); the certificate is said beside it, and offered a remedy.
+    let answer_page = |state: &'static str, detail: String, page: bool| {
+        let detail = match trusted {
+            Some(false) => format!("{detail} · certificate not trusted by this Mac"),
+            _ => detail,
         };
         AddressCheck {
             host: host.clone(),
@@ -564,10 +614,25 @@ async fn check(host: String, port: u16, target: String, named: bool) -> AddressC
             detail,
             tls,
             trusted,
+            page,
         }
     };
+    let answer = |state: &'static str, detail: String| answer_page(state, detail, false);
     if probed == Probe::Down {
         return answer("down", "nothing answers".into());
+    }
+    // Something answers, but not the project: its containers are not up.
+    if ours == Some(false) {
+        let holder = tokio::task::spawn_blocking(move || crate::owners::holder(target_port))
+            .await
+            .ok()
+            .flatten();
+        let who = match holder {
+            Some(name) if crate::owners::is_docker(&name) => "another Docker project".to_string(),
+            Some(name) => name,
+            None => "another program".to_string(),
+        };
+        return answer("taken", format!("used by {who}, not by this project"));
     }
     // Asked by its name, as a guest would, whatever this machine resolves.
     let Some(address) = std::net::ToSocketAddrs::to_socket_addrs(&target)
@@ -585,7 +650,7 @@ async fn check(host: String, port: u16, target: String, named: bool) -> AddressC
         .resolve(&host, std::net::SocketAddr::new(address.ip(), 0))
         .build();
     let Ok(client) = client else {
-        return answer("error", "cannot be asked".into());
+        return answer("warn", "cannot be asked".into());
     };
     // Redirects followed as a browser would, a few of them: what counts is
     // where they lead.
@@ -605,8 +670,10 @@ async fn check(host: String, port: u16, target: String, named: bool) -> AddressC
                 return answer("open", "open, not a web page".into());
             }
             Err(_) => {
+                // It answers, with a redirect: fine for the port, though
+                // where it leads does not answer.
                 let to = redirected.clone().unwrap_or_default();
-                return answer("error", format!("redirects to {to}, where nothing answers"));
+                return answer("ok", format!("redirects to {to}, where nothing answers"));
             }
         };
         let status = response.status();
@@ -626,20 +693,24 @@ async fn check(host: String, port: u16, target: String, named: bool) -> AddressC
                 426 => format!("{code} {reason}: a WebSocket port, not a page"),
                 _ => format!("{code} {reason}").trim().to_string(),
             };
-            return answer(
-                if code < 400 { "ok" } else { "error" },
-                said(&redirected, what),
-            );
+            // A WebSocket server answering as it should is not an error.
+            let state = match code {
+                426 => "open",
+                ..=399 => "ok",
+                400..=499 => "warn",
+                _ => "error",
+            };
+            return answer_page(state, said(&redirected, what), code < 400);
         };
         // Elsewhere than this machine (a login page, say): not followed.
         let local = matches!(next.host_str(), Some(name) if name == host || name == "localhost" || name == "127.0.0.1");
         if !local {
-            return answer("ok", format!("redirects to {next}, elsewhere"));
+            return answer_page("ok", format!("redirects to {next}, elsewhere"), true);
         }
         redirected = Some(next.to_string());
         location = next.to_string();
     }
-    answer("error", said(&redirected, "too many redirects".into()))
+    answer("warn", said(&redirected, "too many redirects".into()))
 }
 
 /// What certifying a project did.
@@ -661,6 +732,7 @@ struct Certified {
 #[tauri::command]
 async fn certify_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<Certified, String> {
     use devshare_core::{ca, probe};
+    let _busy = crate::native::busy(&app);
     let path = PathBuf::from(path);
     let folder = folder_of(&path);
     let options = discovery_options();
@@ -709,9 +781,11 @@ async fn certify_project<R: Runtime>(app: AppHandle<R>, path: String) -> Result<
                     .into(),
             );
         }
-        // Its own names and the certificate's, those the authority may vouch for.
+        // Its own names and the certificate's, those the authority may vouch
+        // for, and localhost: the same page opens trusted by both.
         let mut certified: Vec<String> = Vec::new();
-        for name in names.iter().chain(&found.names) {
+        let localhost = "localhost".to_string();
+        for name in names.iter().chain(&found.names).chain([&localhost]) {
             let name = devshare_core::protocol::normalize_host(name);
             if authority.covers(&name) && !certified.contains(&name) {
                 certified.push(name);
@@ -809,6 +883,7 @@ async fn run_project<R: Runtime>(
     .ok_or(
         "DevShare does not know how to start this project: give it a start command in its details",
     )?;
+    let _busy = crate::native::busy(&app);
     crate::system::run_in(&folder, &command).await
 }
 /// The general settings as they are written, and the defaults that apply
@@ -997,8 +1072,9 @@ pub(crate) async fn start_sharing<R: Runtime>(
         return Err("a session is already in progress".into());
     }
     if paths.is_empty() {
-        return Err("switch on at least one project".into());
+        return Err("start a project to share it".into());
     }
+    let _busy = crate::native::busy(app);
     let folders: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
     let projects = projects(app)?;
     let config = tauri::async_runtime::spawn_blocking(move || {
@@ -1060,6 +1136,7 @@ async fn join<R: Runtime>(
     if joining.0.lock().unwrap().is_some() {
         return Err("this computer is already in a session: leave it first".into());
     }
+    let _busy = crate::native::busy(&app);
     let window = app.clone();
     let joined = Joined::start(
         invitation.trim(),

@@ -97,3 +97,6 @@ button.tool { border: none; background: none; padding: 6px; color: var(--muted);
 button.tool:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
 input.switch.busy { animation: pulse 1s ease-in-out infinite alternate; }
 @keyframes pulse { from { opacity: 0.35; } to { opacity: 0.8; } }
+
+/* Partly running: on, in amber. */
+input.switch.partial:checked { background: var(--attention); }

@@ -72,6 +72,7 @@ function card(project) {
     toggle.checked = moving ? pending.get(project.folder) : isUp(project);
     toggle.disabled = moving || !project.startable || Boolean(project.problem);
     toggle.classList.toggle('busy', moving);
+    toggle.classList.toggle('partial', !moving && state === 'partial');
     toggle.title = project.problem ?? (!project.startable ? 'No start command known: see its page' : isUp(project) ? 'Running: switch off to stop it' : 'Stopped: switch on to start it');
   };
   row.update();

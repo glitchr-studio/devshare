@@ -145,11 +145,13 @@ function setSwitch(toggle, project) {
   toggle.checked = moving ? pending.get(project.folder) : isUp(project);
   toggle.disabled = moving || !project.startable || Boolean(project.problem);
   toggle.classList.toggle('busy', moving);
+  toggle.classList.toggle('partial', !moving && states.get(project.folder) === 'partial');
   toggle.title = project.problem
     ? project.problem
     : !project.startable
       ? 'DevShare does not know how to start it: start it as you usually do, or give it a start command on its page'
-      : isUp(project) ? 'Running: switch off to stop it' : 'Stopped: switch on to start it';
+      : states.get(project.folder) === 'partial' ? 'Partly running: switch off to stop it, or Restart it on its page'
+        : isUp(project) ? 'Running: switch off to stop it' : 'Stopped: switch on to start it';
 }
 
 function syncSwitches(project) {
@@ -259,7 +261,15 @@ function projectState(project) {
   const moving = pending.has(project.folder);
   $('project-state').textContent = project.problem ? '' : moving ? (pending.get(project.folder) ? 'Starting…' : 'Stopping…') : STATE_WORDS[state].split(':')[0];
   $('project-state').className = moving ? 'state' : state === 'running' ? 'state on' : state === 'partial' ? 'state partial' : 'state';
+  $('project-restart').hidden = moving || state !== 'partial' || !project.startable || Boolean(project.problem);
 }
+
+$('project-restart').addEventListener('click', async () => {
+  const project = currentProject();
+  if (!project) return;
+  await toggleRunning(project, false);
+  await toggleRunning(project, true);
+});
 
 // Every address of the project, asked as a guest would; the preview shows
 // the page when one answers with a page, and says why otherwise.
@@ -282,36 +292,65 @@ async function checkProject(project) {
     else rows.push({ ...check, hosts: [check.host] });
   }
   $('project-addresses').replaceChildren(...rows.map((row) => {
-    const usable = row.state === 'ok' || row.state === 'error';
+    const usable = ['ok', 'warn', 'error'].includes(row.state);
     const open = element('button', { type: 'button', className: 'small', textContent: 'Open', disabled: !usable });
     open.addEventListener('click', () => invoke('open_local', { url: row.url }).catch((error) => { $('project-problem').hidden = false; $('project-problem').textContent = String(error); }));
-    const dot = { ok: 'on', open: 'open', error: 'warn' }[row.state] ?? '';
+    const dot = { ok: 'on', open: 'open', warn: 'warn', error: 'bad', taken: 'taken' }[row.state] ?? '';
+    const tone = { warn: 'attention', taken: 'attention', error: 'danger' }[row.state] ?? 'muted';
     // The address, then what it answered, under it.
     return element('li', {}, [
       element('span', { className: `dot ${dot}`, title: row.detail }),
       element('span', { className: 'address' }, [
         element('span', { className: 'name mono', textContent: `${row.hosts.join(', ')}:${row.port}`, title: row.hosts.join('\n') }),
-        element('span', { className: `said ${row.state === 'error' ? 'attention' : 'muted'}`, textContent: row.detail }),
+        element('span', { className: `said ${tone}`, textContent: row.state === 'taken' ? `${row.detail}: free it before starting the project` : row.detail }),
       ]),
       open,
     ]);
   }));
   preview(project, checks);
   certifyOffer(project, checks);
+  namesNote(checks);
 }
+
+// The project's names open on this Mac once the helper points them at it;
+// until then the addresses open on localhost, and this says why.
+function namesNote(checks) {
+  const unnamed = [...new Set(checks
+    .filter((check) => check.host !== 'localhost' && !new URL(check.url).hostname.endsWith(check.host))
+    .map((check) => check.host))];
+  $('names-note').hidden = unnamed.length === 0;
+  if (unnamed.length) {
+    $('names-text').textContent = `${unnamed.join(', ')} ${unnamed.length > 1 ? 'do' : 'does'} not lead to this Mac yet, so Open uses localhost. DevShare's helper points the names of your projects at this Mac: it needs installing, or its update.`;
+  }
+}
+
+$('names-fix').addEventListener('click', async () => {
+  const button = $('names-fix');
+  button.disabled = true;
+  button.textContent = 'Updating…';
+  try {
+    await invoke('install_helper');
+    // The names reach /etc/hosts in the background: asked again shortly.
+    setTimeout(() => { const project = currentProject(); if (project) checkProject(project); }, 1500);
+  } catch (error) {
+    $('names-text').textContent = String(error);
+  }
+  button.disabled = false;
+  button.textContent = 'Update the helper';
+});
 
 // HTTPS this Mac's browsers refuse: the project's own certificate, usually
 // self-signed. This Mac's DevShare authority can issue it one they accept.
 function certifyOffer(project, checks) {
   const refused = checks.filter((check) => check.tls && check.trusted === false);
-  const stopped = checks.length > 0 && checks.every((check) => check.state === 'down');
+  const stopped = checks.length > 0 && checks.every((check) => check.state === 'down' || check.state === 'taken');
   const https = (project.preview ?? '').startsWith('https');
   $('certify-section').hidden = refused.length === 0 && !(stopped && https);
   $('certify-said').textContent = '';
   $('certify-restart').hidden = true;
   if (refused.length) {
     const where = [...new Set(refused.map((check) => `${check.host}:${check.port}`))].join(', ');
-    $('certify-text').textContent = `This Mac does not trust the certificate served on ${where}: browsers warn, and the preview stays empty. This Mac's DevShare authority can issue the project one they accept, for its development names only.`;
+    $('certify-text').textContent = `This Mac does not trust the certificate served on ${where}, by its name or by localhost: browsers warn, and the preview stays empty. This Mac's DevShare authority can issue the project one they accept for both, for its development names only.`;
   } else {
     $('certify-text').textContent = 'Its certificate cannot be checked while the project is stopped. If it is self-signed, this Mac\'s DevShare authority can issue it one the browsers accept, for its development names only.';
   }
@@ -364,7 +403,7 @@ $('certify-restart').addEventListener('click', async () => {
 
 function preview(project, checks) {
   const port = project.preview ? Number(new URL(project.preview).port || (project.preview.startsWith('https') ? 443 : 80)) : null;
-  const pages = checks.filter((check) => check.state === 'ok');
+  const pages = checks.filter((check) => check.page);
   const page = pages.find((check) => check.port === port) ?? pages[0];
   if (page) {
     if ($('preview').getAttribute('src') !== page.url) $('preview').src = page.url;
@@ -382,7 +421,7 @@ function preview(project, checks) {
   $('preview-note').className = 'muted small';
   if (checks.length === 0) {
     $('preview-note').textContent = 'Nothing to preview: the project shares no address.';
-  } else if (checks.every((check) => check.state === 'down')) {
+  } else if (checks.every((check) => check.state === 'down' || check.state === 'taken')) {
     $('preview-note').textContent = project.startable
       ? 'Nothing answers: the project is not started. Start it to see it here.'
       : 'Nothing answers: start the project the way you usually do.';

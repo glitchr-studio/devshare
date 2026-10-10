@@ -118,6 +118,59 @@ pub fn tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
     Ok(())
 }
 
+/// The menu bar icon turns while something is under way: a project starting
+/// or stopping, a session being opened or joined, a certificate issued.
+/// Each such action holds a [`Busy`] for as long as it lasts.
+static UNDER_WAY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+const FRAMES: [&[u8]; 8] = [
+    include_bytes!("../icons/spin/0.png"),
+    include_bytes!("../icons/spin/1.png"),
+    include_bytes!("../icons/spin/2.png"),
+    include_bytes!("../icons/spin/3.png"),
+    include_bytes!("../icons/spin/4.png"),
+    include_bytes!("../icons/spin/5.png"),
+    include_bytes!("../icons/spin/6.png"),
+    include_bytes!("../icons/spin/7.png"),
+];
+
+pub struct Busy;
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        UNDER_WAY.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Something under way, until the returned guard goes.
+pub fn busy<R: Runtime>(app: &tauri::AppHandle<R>) -> Busy {
+    use std::sync::atomic::Ordering;
+    if UNDER_WAY.fetch_add(1, Ordering::SeqCst) == 0 {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            let Some(tray) = app.tray_by_id(TRAY) else {
+                return;
+            };
+            let frames: Vec<_> = FRAMES
+                .iter()
+                .filter_map(|bytes| tauri::image::Image::from_bytes(bytes).ok())
+                .collect();
+            let mut frame = 0;
+            while UNDER_WAY.load(Ordering::SeqCst) > 0 && !frames.is_empty() {
+                tray.set_icon(Some(frames[frame % frames.len()].clone())).ok();
+                tray.set_icon_as_template(true).ok();
+                frame += 1;
+                std::thread::sleep(std::time::Duration::from_millis(90));
+            }
+            if let Ok(still) = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png")) {
+                tray.set_icon(Some(still)).ok();
+                tray.set_icon_as_template(true).ok();
+            }
+        });
+    }
+    Busy
+}
+
 /// Drops the panel down under the menu bar icon, or puts it away.
 fn toggle_panel<R: Runtime>(app: &tauri::AppHandle<R>, rect: tauri::Rect) {
     let Some(panel) = app.get_webview_window(PANEL) else {
